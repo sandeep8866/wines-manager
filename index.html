@@ -12,30 +12,38 @@
 <meta name="description" content="Wines Store Manager — Purchases, Stock, Reports">
 <title>Wines Store Manager</title>
 <script>
-// Inject PWA manifest as inline blob so Chrome shows "Add to Home Screen"
+// Inject PWA manifest using data URI — works on GitHub Pages, Netlify, any https host
 (function(){
   const manifest = {
     name: "Wines Store Manager",
     short_name: "WinesMgr",
     description: "Manage purchases, stock and reports for your wines stores",
-    start_url: ".",
+    start_url: "./",
     display: "standalone",
     background_color: "#f5f0e8",
     theme_color: "#b5720a",
     orientation: "portrait-primary",
     icons: [
-      { src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='32' fill='%23b5720a'/%3E%3Ctext x='96' y='130' font-size='110' text-anchor='middle'%3E🍾%3C/text%3E%3C/svg%3E",
-        sizes: "192x192", type: "image/svg+xml", purpose: "any maskable" },
-      { src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='80' fill='%23b5720a'/%3E%3Ctext x='256' y='350' font-size='300' text-anchor='middle'%3E🍾%3C/text%3E%3C/svg%3E",
-        sizes: "512x512", type: "image/svg+xml", purpose: "any maskable" }
+      {
+        src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='36' fill='%23b5720a'/%3E%3Ctext x='96' y='138' font-size='108' text-anchor='middle'%3E%F0%9F%8D%BE%3C/text%3E%3C/svg%3E",
+        sizes: "192x192",
+        type: "image/svg+xml",
+        purpose: "any maskable"
+      },
+      {
+        src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='96' fill='%23b5720a'/%3E%3Ctext x='256' y='370' font-size='290' text-anchor='middle'%3E%F0%9F%8D%BE%3C/text%3E%3C/svg%3E",
+        sizes: "512x512",
+        type: "image/svg+xml",
+        purpose: "any maskable"
+      }
     ]
   };
-  const blob = new Blob([JSON.stringify(manifest)], {type:'application/manifest+json'});
-  const url  = URL.createObjectURL(blob);
+  const json = JSON.stringify(manifest);
+  const b64  = btoa(unescape(encodeURIComponent(json)));
   const link = document.createElement('link');
   link.rel   = 'manifest';
-  link.href  = url;
-  document.currentScript.parentNode.appendChild(link);
+  link.href  = 'data:application/manifest+json;base64,' + b64;
+  document.head.appendChild(link);
 })();
 </script>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -5091,6 +5099,35 @@ function checkMissingFinancials(){
 
 // Main app init — runs on DOMContentLoaded so it's early
 document.addEventListener('DOMContentLoaded', ()=>{
+
+// Register inline service worker for PWA install prompt
+if('serviceWorker' in navigator){
+  const swCode = `
+    self.addEventListener('install', e => { self.skipWaiting(); });
+    self.addEventListener('activate', e => { e.waitUntil(clients.claim()); });
+    self.addEventListener('fetch', e => {
+      // Network first — always get fresh content
+      e.respondWith(fetch(e.request).catch(()=> caches.match(e.request)));
+    });
+  `;
+  const swBlob = new Blob([swCode], {type:'application/javascript'});
+  const swUrl  = URL.createObjectURL(swBlob);
+  navigator.serviceWorker.register(swUrl, {scope:'./'}).catch(()=>{});
+}
+
+// Show install banner when browser fires the prompt
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  // Show a custom install button in the topbar
+  const btn = document.createElement('button');
+  btn.id = 'pwa-install-btn';
+  btn.textContent = '📲';
+  btn.title = 'Add to Home Screen';
+  btn.style.cssText = 'background:var(--gold);border:none;border-radius:8px;padding:3px 8px;font-size:1rem;cursor:pointer;margin-left:4px';
+  btn.onclick = () => { e.prompt(); btn.remove(); };
+  document.getElementById('topbar')?.appendChild(btn);
+  toast('📲 Tap 📲 in the top bar to install this app');
+});
   // Dismiss splash
   setTimeout(()=> document.getElementById('splash')?.classList.add('out'), 1600);
   const d = new Date();
