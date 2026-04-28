@@ -10,6 +10,9 @@
 <meta name="apple-mobile-web-app-title" content="WinesMgr">
 <meta name="application-name" content="WinesMgr">
 <meta name="description" content="Wines Store Manager — Purchases, Stock, Reports">
+<!-- Apple touch icon — shown on home screen -->
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%23b5720a'/%3E%3Ctext x='90' y='130' font-size='100' text-anchor='middle'%3E%F0%9F%8D%BE%3C/text%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23b5720a'/%3E%3Ctext x='16' y='24' font-size='20' text-anchor='middle'%3E%F0%9F%8D%BE%3C/text%3E%3C/svg%3E">
 <title>Wines Store Manager</title>
 <script>
 // Inject PWA manifest using data URI — works on GitHub Pages, Netlify, any https host
@@ -4868,22 +4871,18 @@ async function fetchGdrivePDFs(refetchAll){
         const fr = await cloudCall({action:'getFile', fileId:f.id});
         if(!fr.ok || !fr.base64) throw new Error(fr.error || 'Download failed');
 
-        // Convert base64 → ArrayBuffer efficiently
-        const b64  = fr.base64;
-        const bin  = atob(b64);
-        const buf  = new ArrayBuffer(bin.length);
-        const view = new Uint8Array(buf);
-        for(let j=0; j<bin.length; j++) view[j] = bin.charCodeAt(j);
+        // Convert base64 → File object for extractPDF
+        const bin  = atob(fr.base64);
+        const buf  = new Uint8Array(bin.length);
+        for(let j=0; j<bin.length; j++) buf[j] = bin.charCodeAt(j);
+        const blob = new Blob([buf], {type:'application/pdf'});
+        const file = new File([blob], f.name, {type:'application/pdf'});
 
-        // Free base64 string immediately before PDF.js loads
+        // Free base64 immediately
         fr.base64 = null;
 
-        // Extract text with memory-safe PDF.js — destroy every page after reading
-        const text = await extractTextMemorySafe(buf);
-        if(!text || text.length < 100) throw new Error('Could not extract text from PDF');
-
-        // Parse from text — same as server-side approach
-        const parsed = parseICDCFromText(text, f.name);
+        // Use the original accurate PDF.js parser
+        const parsed = await extractPDF(file);
         if(!parsed || !parsed.items?.length){
           failed++;
           if(log) log.innerHTML = `❌ ${f.name.slice(0,25)}: parse failed<br>` + log.innerHTML;
@@ -5106,7 +5105,6 @@ if('serviceWorker' in navigator){
     self.addEventListener('install', e => { self.skipWaiting(); });
     self.addEventListener('activate', e => { e.waitUntil(clients.claim()); });
     self.addEventListener('fetch', e => {
-      // Network first — always get fresh content
       e.respondWith(fetch(e.request).catch(()=> caches.match(e.request)));
     });
   `;
@@ -5115,19 +5113,43 @@ if('serviceWorker' in navigator){
   navigator.serviceWorker.register(swUrl, {scope:'./'}).catch(()=>{});
 }
 
-// Show install banner when browser fires the prompt
-window.addEventListener('beforeinstallprompt', e => {
-  e.preventDefault();
-  // Show a custom install button in the topbar
-  const btn = document.createElement('button');
-  btn.id = 'pwa-install-btn';
-  btn.textContent = '📲';
-  btn.title = 'Add to Home Screen';
-  btn.style.cssText = 'background:var(--gold);border:none;border-radius:8px;padding:3px 8px;font-size:1rem;cursor:pointer;margin-left:4px';
-  btn.onclick = () => { e.prompt(); btn.remove(); };
-  document.getElementById('topbar')?.appendChild(btn);
-  toast('📲 Tap 📲 in the top bar to install this app');
-});
+// iOS "Add to Home Screen" prompt — show once if not already installed
+const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+const isStandalone = window.navigator.standalone === true;
+const dismissed = localStorage.getItem('lm_ios_prompt_dismissed');
+if(isIOS && !isStandalone && !dismissed){
+  setTimeout(()=>{
+    const banner = document.createElement('div');
+    banner.id = 'ios-install-banner';
+    banner.style.cssText = `
+      position:fixed;bottom:70px;left:12px;right:12px;z-index:9998;
+      background:#1c1c1e;color:#fff;border-radius:14px;padding:14px 16px;
+      box-shadow:0 4px 24px rgba(0,0,0,.5);font-family:-apple-system,sans-serif;
+    `;
+    banner.innerHTML = `
+      <div style="display:flex;align-items:flex-start;gap:12px">
+        <div style="font-size:2rem;line-height:1">🍾</div>
+        <div style="flex:1">
+          <div style="font-weight:700;font-size:.9rem;margin-bottom:4px">Add to Home Screen</div>
+          <div style="font-size:.78rem;color:#ebebf599;line-height:1.4">
+            Tap <strong style="color:#fff">Share</strong>
+            <svg style="display:inline;vertical-align:middle;margin:0 3px" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8M16 6l-4-4-4 4M12 2v13"/></svg>
+            then <strong style="color:#fff">"Add to Home Screen"</strong>
+            to install this app
+          </div>
+        </div>
+        <button onclick="document.getElementById('ios-install-banner').remove();localStorage.setItem('lm_ios_prompt_dismissed','1')"
+          style="background:none;border:none;color:#ebebf599;font-size:1.2rem;cursor:pointer;padding:0;line-height:1">✕</button>
+      </div>
+      <div style="margin-top:10px;border-top:1px solid rgba(255,255,255,.15);padding-top:10px;font-size:.72rem;color:#ebebf599;text-align:center">
+        Works like a native app — no App Store needed
+      </div>
+    `;
+    document.body.appendChild(banner);
+    // Auto-hide after 15 seconds
+    setTimeout(()=>{ banner.remove(); }, 15000);
+  }, 2500);
+}
   // Dismiss splash
   setTimeout(()=> document.getElementById('splash')?.classList.add('out'), 1600);
   const d = new Date();
