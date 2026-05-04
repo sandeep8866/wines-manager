@@ -2028,13 +2028,24 @@ function extractItemRows(rows){
 
     const fullRowText = cells.map(c=>c.str).join(' ');
 
-    const bnMatch = fullRowText.match(/\b(\d{4})\s*\((\d+)\)/);
-    if(!bnMatch) continue;
-
     if(/invoice\s*qty|breakage|shortage|reverted|total.*cases|particulars|sl\.?\s*no|brand\s*num/i.test(fullRowText)) continue;
 
-    const brandNum  = `${bnMatch[1]} (${bnMatch[2]})`;
-    const packCount = parseInt(bnMatch[2]);
+    // Support BOTH formats:
+    //   Old: "5019 (24) BUDWEISER..."  — brand code + pack count in parentheses
+    //   New: "5019 BUDWEISER... 24 / 500 ml" — brand code standalone, pack from pack-size column
+    const bnMatch = fullRowText.match(/\b(\d{4})\s*\((\d+)\)/);
+    if(!bnMatch && !(/\b\d{4}\b/.test(fullRowText) && /\d+\s*\/\s*\d+\s*ml/i.test(fullRowText))) continue;
+
+    let brandNum, packCount;
+    if(bnMatch){
+      brandNum  = `${bnMatch[1]} (${bnMatch[2]})`;
+      packCount = parseInt(bnMatch[2]);
+    } else {
+      const psM   = fullRowText.match(/(\d+)\s*\/\s*(\d+)\s*ml/i);
+      const code4 = fullRowText.match(/\b(\d{4})\b/)?.[1] || '';
+      packCount = psM ? parseInt(psM[1]) : 0;
+      brandNum  = `${code4} (${packCount})`;
+    }
 
     // Product type
     let ptype = 'IML';
@@ -2056,7 +2067,7 @@ function extractItemRows(rows){
 
     const bnCellIdx = cells.findIndex(c =>
       /^\d{4}\s*\(\d+\)$/.test(c.str.trim()) ||
-      c.str.trim() === bnMatch[1]
+      c.str.trim() === (bnMatch ? bnMatch[1] : brandNum.split(' ')[0])
     );
     let brandName = '';
 
@@ -2186,19 +2197,76 @@ function extractItemRows(rows){
 
 // ── TEXT FALLBACK PARSER ──────────────────────────────────────────────────────
 // Works purely on flat pipe-separated text lines — handles large bills well
+// Supports BOTH old format: "1 5019 (24) BUDWEISER..." 
+// AND new format:           "1 5019 BUDWEISER KING OF BEERS Beer C 24 / 500 ml ..."
 function parseICDCItemsFallback(flatLines){
   const items = [];
   const seen  = new Set();
 
-  // Reconstruct a single clean string and find all item rows by regex
-  // Each row starts with: <slno> <brandNum (NNNN (NN))> <brandName> <type> ...
   const fullText = flatLines.join('\n');
 
-  // Split on serial numbers at line start: "1 5016..." "128 1511..."
-  // Use the pattern: newline + digits + space + 4-digit brand code
-  // Two patterns:
-  // Normal:  "84 0546 (48) 8PM..." — serial and brand code are separate tokens
-  // Merged:  "840546 (48) 8PM..."  — serial and brand code fused into one token (large PDFs)
+  // ── NEW FORMAT: "Sl# BrandCode BrandName ... PackQty/Size(ml) CasesDel BtlsDel ..."
+  // Brand code is standalone 4-digit, pack info comes later as "24 / 500 ml"
+  // Detect new format: rows have standalone brand code (no parentheses after it)
+  const newFmtRe = /(?:^|\n)\s*(\d{1,3})\s+(\d{4})\s+(?!\()(.+?)(?=\n\s*\d{1,3}\s+\d{4}\s+(?!\()|\n\s*TIN\s*NO|\n\s*Particulars|\n\s*Invoice\s*Qty|$)/gs;
+  const newFmtItems = [];
+  let nm;
+  while((nm = newFmtRe.exec(fullText)) !== null){
+    const brandCode = nm[2].trim();
+    const rest = nm[3].replace(/\n/g,' ').replace(/\s+/g,' ').trim();
+    if(/invoice\s*qty|breakage|shortage|reverted|particulars|sl\.?\s*no|brand\s*num/i.test(rest)) continue;
+    if(rest.length < 5) continue;
+    // Must contain a pack size like "24 / 500 ml" to be a valid item row
+    if(!/\d+\s*\/\s*\d+\s*ml/i.test(rest)) continue;
+
+    let ptype = 'IML';
+    if(/\bBeer\b/i.test(rest)) ptype = 'Beer';
+    else if(/Duty\s*Paid/i.test(rest)) ptype = 'Duty Paid';
+
+    const psM = rest.match(/(\d+)\s*\/\s*(\d+)\s*ml/i);
+    const packSize = psM ? `${psM[1]}/${psM[2]}ml` : '';
+    const packN = psM ? parseInt(psM[1]) : 0;
+
+    const ptM = rest.match(/\b(?:IML|Beer|Duty Paid)\s+([GPC])\b/i);
+    const ppack = ptM ? ptM[1] : '';
+
+    const typeIdx = rest.search(/\b(IML|Beer|Duty\s+Paid)\b/i);
+    let brandName = (typeIdx > 0 ? rest.slice(0, typeIdx) : rest.slice(0, 60))
+      .replace(/^\d+\s+/, '').replace(/\(\d+\)\s*$/, '').replace(/[|]/g,' ').replace(/\s{2,}/g,' ').trim().slice(0,80);
+
+    // Cases/Btls: after the pack size token
+    let casesDel=0, btlsDel=0;
+    const psAll = [...rest.matchAll(/\d+\s*\/\s*\d+\s*ml/gi)];
+    const lastPs = psAll[psAll.length-1];
+    if(lastPs){
+      const afterPs = rest.slice(lastPs.index + lastPs[0].length);
+      let found2=0;
+      for(const tok of afterPs.split(/\s+/)){
+        const s=tok.trim();
+        if(!s) continue;
+        if(!/^\d+$/.test(s)){ if(found2>=1) break; continue; }
+        const v=parseInt(s);
+        if(v>500) break;
+        if(found2===0){casesDel=v;found2++;}
+        else{btlsDel=v;break;}
+      }
+    }
+
+    const nums=[...(rest.matchAll(/[\d,]+\.?\d*/g))].map(n=>parseFloat(n[0].replace(/,/g,''))).filter(n=>n>0&&!isNaN(n));
+    if(nums.length<2) continue;
+    const total=nums[nums.length-1];
+    const unitRate=nums[nums.length-2];
+    if(total<100) continue;
+
+    const brandNum=`${brandCode} (${packN||'?'})`;
+    const k=`${brandNum}_${total}`;
+    if(seen.has(k)) continue;
+    seen.add(k);
+    newFmtItems.push({brandNum,brandName:brandName||brandCode,ptype,ppack,packSize,casesDel,btlsDel,unitRate,total});
+  }
+  if(newFmtItems.length>0) return newFmtItems;
+
+  // ── OLD FORMAT: "Sl# NNNN (packCount) BrandName ..."
   const rowRe = /(?:^|\n)\s*(?:(\d{1,3})\s+(\d{4})|(\d{1,3})(\d{4}))\s*\((\d+)\)\s+(.+?)(?=\n\s*(?:\d{1,3}\s+\d{4}|\d{5,7})\s*\(|\n\s*TIN\s*NO|\n\s*Particulars|$)/gs;
 
   let m;
@@ -2855,112 +2923,146 @@ function updatePurchaseFilter(){
 // ══════════════════════════════════════════════
 //  BILL TALLY CHECKER
 // ══════════════════════════════════════════════
+// Store cess rates per brand: { "billId_bn_sml": cessPerBtl }
+const tallycessMap = JSON.parse(localStorage.getItem('lm_tally_cess')||'{}');
+function saveTallyCess(key, val){
+  tallycessMap[key] = parseFloat(val)||0;
+  localStorage.setItem('lm_tally_cess', JSON.stringify(tallycessMap));
+  renderBillTally();
+}
+function getTallyCess(key, def){ return tallycessMap[key]!==undefined ? tallycessMap[key] : def; }
+
 function renderBillTally(){
   const div = document.getElementById('bill-tally-result');
   if(!div) return;
-
-  const cessPerBottle = parseFloat(document.getElementById('tally-cess-per-bottle')?.value) || 0;
-  const filter        = document.getElementById('tally-filter')?.value || 'all';
-  const bills         = ga('bills').sort((a,b)=>a.date.localeCompare(b.date));
+  const globalCess = parseFloat(document.getElementById('tally-cess-per-bottle')?.value)||0;
+  const filter     = document.getElementById('tally-filter')?.value||'all';
+  const bills      = ga('bills').sort((a,b)=>a.date.localeCompare(b.date));
 
   if(!bills.length){
-    div.innerHTML = '<div style="color:var(--t3);font-size:.78rem">No bills to check</div>';
+    div.innerHTML='<div style="color:var(--t3);font-size:.78rem;padding:10px">No bills for this store</div>';
     return;
   }
 
-  const stock = getStock();
-
-  // Build tally for each bill
-  const rows = bills.map(b=>{
-    // Calculate expected amount from price list data
-    let calcIssue  = 0;  // Issue price total (cases × issue price/case)
-    let calcMargin = 0;  // Special margin total (bottles × spMargin/btl)
-    let totalBtls  = 0;
-
-    (b.items||[]).forEach(it=>{
-      const cases  = it.casesDel || 0;
-      const btls   = it.btlsDel  || 0;
-      const packQty= parseInt((it.packSize||'12').split('/')[0]) || 12;
-      const totalBottles = cases * packQty + btls;
-      totalBtls += totalBottles;
-
-      // Look up price data
-      const bn  = String(it.brandNum||it.bnum||'').replace(/^0+/,'');
-      const sml = parseInt((it.packSize||'').replace(/.*\//,'').trim()) || 0;
-      const pd  = getPriceData(bn, sml);
-
-      if(pd){
-        calcIssue  += cases * pd[0];               // cases × issue price/case
-        calcMargin += totalBottles * pd[1];         // bottles × special margin/btl
-      } else {
-        // Fallback: use stored issue price if available
-        if(it.unitRate) calcIssue += cases * (it.unitRate * packQty);
-      }
+  const tallied = bills.map(b=>{
+    const items = (b.items||[]).map(it=>{
+      const cases=it.casesDel||0, extraBtls=it.btlsDel||0;
+      const packQty=parseInt((it.packSize||'12').split('/')[0])||12;
+      const totalBtl=cases*packQty+extraBtls;
+      const bn=String(it.brandNum||it.bnum||'').replace(/^0+/,'');
+      const sml=parseInt((it.packSize||'').replace(/.*\//,'').trim())||0;
+      const pd=getPriceData(bn,sml);
+      const cessKey=`${b.id}_${bn}_${sml}`;
+      const cess=getTallyCess(cessKey, globalCess);
+      const issueAmt=pd?cases*pd[0]:(it.unitRate?cases*it.unitRate*packQty:0);
+      const marginAmt=pd?totalBtl*pd[1]:0;
+      const cessAmt=cess*totalBtl;
+      return {it,bn,sml,packQty,totalBtl,cessKey,cess,issueAmt,marginAmt,cessAmt,
+        lineTotal:issueAmt+marginAmt+cessAmt,
+        issuePerCase:pd?pd[0]:0, marginPerBtl:pd?pd[1]:0, mrp:pd?pd[2]:0, hasPd:!!pd};
     });
-
-    const calcCess  = cessPerBottle * totalBtls;
-    const calcTotal = Math.round((calcIssue + calcMargin + calcCess) * 100) / 100;
-    const actual    = b.netInvoice || 0;
-    const diff      = Math.round((actual - calcTotal) * 100) / 100;
-    const matched   = Math.abs(diff) < 2; // within ₹2 tolerance
-
-    return { b, calcIssue, calcMargin, calcCess, calcTotal, actual, diff, matched, totalBtls };
+    const calcTotal=items.reduce((s,r)=>s+r.lineTotal,0);
+    const actual=b.netInvoice||0;
+    const diff=Math.round((actual-calcTotal)*100)/100;
+    const matched=Math.abs(diff)<5;
+    const totalBtls=items.reduce((s,r)=>s+r.totalBtl,0);
+    return {b,items,calcTotal,actual,diff,matched,totalBtls};
   });
 
-  // Apply filter
-  const filtered = filter === 'mismatch' ? rows.filter(r=>!r.matched)
-                 : filter === 'match'    ? rows.filter(r=>r.matched)
-                 : rows;
+  const matchCount=tallied.filter(r=>r.matched).length;
+  const mismatchCount=tallied.filter(r=>!r.matched).length;
+  const filtered=filter==='mismatch'?tallied.filter(r=>!r.matched):filter==='match'?tallied.filter(r=>r.matched):tallied;
 
-  const matchCount    = rows.filter(r=>r.matched).length;
-  const mismatchCount = rows.filter(r=>!r.matched).length;
-
-  div.innerHTML = `
-    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-      <div style="background:rgba(39,174,96,.1);border:1px solid var(--green);border-radius:8px;padding:6px 14px;font-size:.78rem">
-        ✅ <strong>${matchCount}</strong> matched
-      </div>
-      <div style="background:rgba(192,57,43,.1);border:1px solid var(--red);border-radius:8px;padding:6px 14px;font-size:.78rem">
-        ❌ <strong>${mismatchCount}</strong> mismatch${mismatchCount!==1?'es':''}
-      </div>
-      ${cessPerBottle===0?`<div style="color:var(--t3);font-size:.72rem;align-self:center">⚠️ Enter Excise Cess per bottle above for accurate tally</div>`:''}
+  div.innerHTML=`
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
+      <div style="background:rgba(39,174,96,.1);border:1px solid var(--green);border-radius:8px;padding:5px 12px;font-size:.75rem">✅ <strong>${matchCount}</strong> matched</div>
+      <div style="background:rgba(192,57,43,.1);border:1px solid var(--red);border-radius:8px;padding:5px 12px;font-size:.75rem">❌ <strong>${mismatchCount}</strong> mismatched</div>
+      ${globalCess===0?`<div style="color:var(--t3);font-size:.7rem">Set global cess above, or enter per brand ▼</div>`:''}
     </div>
-    <div style="overflow-x:auto">
-      <table style="width:100%;font-size:.72rem;border-collapse:collapse">
-        <thead>
-          <tr style="background:var(--s3)">
-            <th style="padding:6px;text-align:left;font-weight:600">Date</th>
-            <th style="padding:6px;text-align:left;font-weight:600">ICDC</th>
-            <th style="padding:6px;text-align:right;font-weight:600">Bottles</th>
-            <th style="padding:6px;text-align:right;font-weight:600">Issue Amt</th>
-            <th style="padding:6px;text-align:right;font-weight:600">Sp.Margin</th>
-            <th style="padding:6px;text-align:right;font-weight:600">Cess</th>
-            <th style="padding:6px;text-align:right;font-weight:600">Calc Total</th>
-            <th style="padding:6px;text-align:right;font-weight:600">Actual</th>
-            <th style="padding:6px;text-align:right;font-weight:600">Diff</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${filtered.map(({b,calcIssue,calcMargin,calcCess,calcTotal,actual,diff,matched,totalBtls})=>`
-            <tr style="border-bottom:1px solid var(--border);${!matched?'background:rgba(192,57,43,.05)':''}">
-              <td style="padding:5px 6px;white-space:nowrap">${fmtDate(b.date)}</td>
-              <td style="padding:5px 6px;font-size:.65rem;color:var(--t3);font-family:monospace">${(b.icdc||'Manual').slice(-8)}</td>
-              <td style="padding:5px 6px;text-align:right">${totalBtls}</td>
-              <td style="padding:5px 6px;text-align:right">${fmtR(calcIssue)}</td>
-              <td style="padding:5px 6px;text-align:right">${fmtR(calcMargin)}</td>
-              <td style="padding:5px 6px;text-align:right">${fmtR(calcCess)}</td>
-              <td style="padding:5px 6px;text-align:right;font-weight:600">${fmtR(calcTotal)}</td>
-              <td style="padding:5px 6px;text-align:right;font-weight:600;color:var(--gold2)">${fmtR(actual)}</td>
-              <td style="padding:5px 6px;text-align:right;font-weight:700;color:${matched?'var(--green)':Math.abs(diff)>100?'var(--red)':'#e67e22'}">
-                ${matched?'✅':diff>0?'+'+fmtR(diff):fmtR(diff)}
-              </td>
-            </tr>`).join('')}
-        </tbody>
-      </table>
-    </div>
-    ${filtered.length===0?`<div style="color:var(--t3);font-size:.78rem;text-align:center;padding:12px">No bills in this filter</div>`:''}
+    ${filtered.map(({b,items,calcTotal,actual,diff,matched,totalBtls})=>`
+      <div style="border:1px solid ${matched?'var(--border)':'rgba(192,57,43,.3)'};border-radius:10px;margin-bottom:10px;overflow:hidden">
+        <div style="background:${matched?'var(--s3)':'rgba(192,57,43,.07)'};padding:8px 12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;cursor:pointer"
+          onclick="const nx=this.nextElementSibling;nx.style.display=nx.style.display==='none'?'block':'none'">
+          <div style="font-weight:700;font-size:.8rem;flex:1;min-width:120px">
+            ${fmtDate(b.date)}
+            <span style="font-size:.62rem;color:var(--t3);font-family:monospace;margin-left:6px">${(b.icdc||'Manual').slice(-10)}</span>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;font-size:.72rem">
+            <span style="color:var(--t3)">${totalBtls} btls · ${items.length} brands</span>
+            <span>Calc: <strong>${fmtR(calcTotal)}</strong></span>
+            <span>Actual: <strong style="color:var(--gold2)">${fmtR(actual)}</strong></span>
+            <span style="font-weight:700;color:${matched?'var(--green)':Math.abs(diff)>100?'var(--red)':'#e67e22'}">
+              ${matched?'✅':('Diff: '+(diff>0?'+':'')+fmtR(diff))}
+            </span>
+          </div>
+          <span style="font-size:.65rem;color:var(--t3)">▼ tap to expand</span>
+        </div>
+        <div style="display:none;overflow-x:auto">
+          <table style="width:100%;font-size:.68rem;border-collapse:collapse;min-width:700px">
+            <thead><tr style="background:var(--s2);border-bottom:1px solid var(--border)">
+              <th style="padding:5px 8px;text-align:left">Brand</th>
+              <th style="padding:5px 4px;text-align:center">Pack</th>
+              <th style="padding:5px 4px;text-align:right">Cases</th>
+              <th style="padding:5px 4px;text-align:right">+Btls</th>
+              <th style="padding:5px 4px;text-align:right">Total Btls</th>
+              <th style="padding:5px 4px;text-align:right">Issue/Case</th>
+              <th style="padding:5px 4px;text-align:right">Margin/Btl</th>
+              <th style="padding:5px 4px;text-align:right;color:var(--gold2);background:rgba(181,114,10,.08)">Cess/Btl ₹</th>
+              <th style="padding:5px 4px;text-align:right">Issue Amt</th>
+              <th style="padding:5px 4px;text-align:right">Margin</th>
+              <th style="padding:5px 4px;text-align:right">Cess</th>
+              <th style="padding:5px 4px;text-align:right;font-weight:700">Line Total</th>
+            </tr></thead>
+            <tbody>
+              ${items.map(r=>`
+                <tr style="border-bottom:1px solid var(--border)">
+                  <td style="padding:5px 8px;font-weight:600;max-width:130px;word-break:break-word">
+                    ${esc(cleanBrandName(r.it.brandName||r.it.bnum,r.it.brandNum||r.it.bnum))}
+                    ${!r.hasPd?`<span style="color:var(--red);font-size:.58rem"> ⚠</span>`:''}
+                  </td>
+                  <td style="padding:5px 4px;text-align:center;color:var(--t3)">${r.it.packSize||'—'}</td>
+                  <td style="padding:5px 4px;text-align:right">${r.it.casesDel||0}</td>
+                  <td style="padding:5px 4px;text-align:right">${r.it.btlsDel||0}</td>
+                  <td style="padding:5px 4px;text-align:right;font-weight:600">${r.totalBtl}</td>
+                  <td style="padding:5px 4px;text-align:right;color:var(--t3)">${r.issuePerCase?fmtR(r.issuePerCase):'—'}</td>
+                  <td style="padding:5px 4px;text-align:right;color:var(--t3)">${r.marginPerBtl?fmtR(r.marginPerBtl):'—'}</td>
+                  <td style="padding:5px 4px;text-align:right;background:rgba(181,114,10,.05)">
+                    <input type="number" step="0.01" min="0"
+                      value="${r.cess||globalCess||''}" placeholder="${globalCess||'0.00'}"
+                      style="width:62px;padding:2px 4px;text-align:right;font-size:.7rem;border:1px solid var(--border);border-radius:4px;background:var(--s2);color:var(--gold2);font-weight:600"
+                      onchange="saveTallyCess('${r.cessKey}',this.value)"
+                      onblur="saveTallyCess('${r.cessKey}',this.value)">
+                  </td>
+                  <td style="padding:5px 4px;text-align:right">${fmtR(r.issueAmt)}</td>
+                  <td style="padding:5px 4px;text-align:right">${fmtR(r.marginAmt)}</td>
+                  <td style="padding:5px 4px;text-align:right;color:var(--gold2)">${fmtR(r.cessAmt)}</td>
+                  <td style="padding:5px 4px;text-align:right;font-weight:700">${fmtR(r.lineTotal)}</td>
+                </tr>`).join('')}
+              <tr style="background:var(--s3);font-weight:700;border-top:2px solid var(--border)">
+                <td colspan="8" style="padding:5px 8px;text-align:right;font-size:.7rem">BILL TOTAL →</td>
+                <td style="padding:5px 4px;text-align:right">${fmtR(items.reduce((s,r)=>s+r.issueAmt,0))}</td>
+                <td style="padding:5px 4px;text-align:right">${fmtR(items.reduce((s,r)=>s+r.marginAmt,0))}</td>
+                <td style="padding:5px 4px;text-align:right;color:var(--gold2)">${fmtR(items.reduce((s,r)=>s+r.cessAmt,0))}</td>
+                <td style="padding:5px 4px;text-align:right;font-size:.78rem">${fmtR(calcTotal)}</td>
+              </tr>
+              <tr style="background:${matched?'rgba(39,174,96,.06)':'rgba(192,57,43,.06)'}">
+                <td colspan="11" style="padding:5px 8px;text-align:right;font-size:.7rem;font-weight:600">Actual Net Invoice (PDF):</td>
+                <td style="padding:5px 4px;text-align:right;font-weight:700;color:var(--gold2)">${fmtR(actual)}</td>
+              </tr>
+              <tr style="background:${matched?'rgba(39,174,96,.06)':'rgba(192,57,43,.06)'}">
+                <td colspan="11" style="padding:5px 8px;text-align:right;font-size:.7rem;font-weight:600">Difference:</td>
+                <td style="padding:5px 4px;text-align:right;font-weight:700;font-size:.82rem;color:${matched?'var(--green)':Math.abs(diff)>100?'var(--red)':'#e67e22'}">
+                  ${matched?'✅ Match':(diff>0?'+':'')+fmtR(diff)}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>`).join('')}
+    ${filtered.length===0?`<div style="color:var(--t3);font-size:.78rem;text-align:center;padding:16px">No bills in this filter</div>`:''}
   `;
 }
+
 
 function renderPurchaseList(){
   const filter = document.getElementById('pur-filter')?.value||'';
