@@ -2196,143 +2196,78 @@ function extractItemRows(rows){
 }
 
 // ── TEXT FALLBACK PARSER ──────────────────────────────────────────────────────
-// Works purely on flat pipe-separated text lines — handles large bills well
-// Supports BOTH old format: "1 5019 (24) BUDWEISER..." 
-// AND new format:           "1 5019 BUDWEISER KING OF BEERS Beer C 24 / 500 ml ..."
+// Handles ALL known ICDC bill variants:
+//   Old:    "1 5019 (24) BUDWEISER..."           — brand+pack in parentheses
+//   New:    "1 5019 BUDWEISER... 24 / 500 ml 1 0 3,402.00" — standalone code
+//   Merged: "991102 MORE AND MORE..."             — serial fused to brand code
+//   Fused:  "9 / 1000 ml10"                      — cases number fused after ml
 function parseICDCItemsFallback(flatLines){
   const items = [];
   const seen  = new Set();
-
   const fullText = flatLines.join('\n');
 
-  // ── NEW FORMAT: "Sl# BrandCode BrandName ... PackQty/Size(ml) CasesDel BtlsDel ..."
-  // Brand code is standalone 4-digit, pack info comes later as "24 / 500 ml"
-  // Detect new format: rows have standalone brand code (no parentheses after it)
-  const newFmtRe = /(?:^|\n)\s*(\d{1,3})\s+(\d{4})\s+(?!\()(.+?)(?=\n\s*\d{1,3}\s+\d{4}\s+(?!\()|\n\s*TIN\s*NO|\n\s*Particulars|\n\s*Invoice\s*Qty|$)/gs;
-  const newFmtItems = [];
-  let nm;
-  while((nm = newFmtRe.exec(fullText)) !== null){
-    const brandCode = nm[2].trim();
-    const rest = nm[3].replace(/\n/g,' ').replace(/\s+/g,' ').trim();
-    if(/invoice\s*qty|breakage|shortage|reverted|particulars|sl\.?\s*no|brand\s*num/i.test(rest)) continue;
-    if(rest.length < 5) continue;
-    // Must contain a pack size like "24 / 500 ml" to be a valid item row
-    if(!/\d+\s*\/\s*\d+\s*ml/i.test(rest)) continue;
+  // ── Normalise: insert space between "ml" and immediately-following digits ──
+  // e.g. "1000 ml10" → "1000 ml 10"  (fused cases number)
+  const normText = fullText.replace(/\bml(\d)/gi, 'ml $1');
 
-    let ptype = 'IML';
-    if(/\bBeer\b/i.test(rest)) ptype = 'Beer';
-    else if(/Duty\s*Paid/i.test(rest)) ptype = 'Duty Paid';
-
-    const psM = rest.match(/(\d+)\s*\/\s*(\d+)\s*ml/i);
-    const packSize = psM ? `${psM[1]}/${psM[2]}ml` : '';
-    const packN = psM ? parseInt(psM[1]) : 0;
-
-    const ptM = rest.match(/\b(?:IML|Beer|Duty Paid)\s+([GPC])\b/i);
-    const ppack = ptM ? ptM[1] : '';
-
-    const typeIdx = rest.search(/\b(IML|Beer|Duty\s+Paid)\b/i);
-    let brandName = (typeIdx > 0 ? rest.slice(0, typeIdx) : rest.slice(0, 60))
-      .replace(/^\d+\s+/, '').replace(/\(\d+\)\s*$/, '').replace(/[|]/g,' ').replace(/\s{2,}/g,' ').trim().slice(0,80);
-
-    // Cases/Btls: after the pack size token
-    let casesDel=0, btlsDel=0;
-    const psAll = [...rest.matchAll(/\d+\s*\/\s*\d+\s*ml/gi)];
-    const lastPs = psAll[psAll.length-1];
-    if(lastPs){
-      const afterPs = rest.slice(lastPs.index + lastPs[0].length);
-      let found2=0;
-      for(const tok of afterPs.split(/\s+/)){
-        const s=tok.trim();
-        if(!s) continue;
-        if(!/^\d+$/.test(s)){ if(found2>=1) break; continue; }
-        const v=parseInt(s);
-        if(v>500) break;
-        if(found2===0){casesDel=v;found2++;}
-        else{btlsDel=v;break;}
-      }
-    }
-
-    const nums=[...(rest.matchAll(/[\d,]+\.?\d*/g))].map(n=>parseFloat(n[0].replace(/,/g,''))).filter(n=>n>0&&!isNaN(n));
-    if(nums.length<2) continue;
-    const total=nums[nums.length-1];
-    const unitRate=nums[nums.length-2];
-    if(total<100) continue;
-
-    const brandNum=`${brandCode} (${packN||'?'})`;
-    const k=`${brandNum}_${total}`;
-    if(seen.has(k)) continue;
-    seen.add(k);
-    newFmtItems.push({brandNum,brandName:brandName||brandCode,ptype,ppack,packSize,casesDel,btlsDel,unitRate,total});
-  }
-  if(newFmtItems.length>0) return newFmtItems;
-
-  // ── OLD FORMAT: "Sl# NNNN (packCount) BrandName ..."
-  const rowRe = /(?:^|\n)\s*(?:(\d{1,3})\s+(\d{4})|(\d{1,3})(\d{4}))\s*\((\d+)\)\s+(.+?)(?=\n\s*(?:\d{1,3}\s+\d{4}|\d{5,7})\s*\(|\n\s*TIN\s*NO|\n\s*Particulars|$)/gs;
+  // ── UNIVERSAL ROW REGEX ──────────────────────────────────────────────────────
+  // Matches ALL four variants above.
+  // Capture groups:
+  //   1+2 : normal  "84 0546"          sl=1, code=2
+  //   3+4 : merged  "840546"           sl=3, code=4
+  //   5   : pack count in parentheses (old format only)
+  //   6   : rest of line content
+  const rowRe = /(?:^|\n)\s*(?:(\d{1,3})\s+(\d{4})|(\d{1,3})(\d{4}))\s*(?:\((\d+)\))?\s+(.+?)(?=\n\s*(?:\d{1,3}\s+\d{4}|\d{5,7}\s*(?:\(|\s+[A-Z])|\d{5,7}[A-Z])|\n\s*TIN\s*NO|\n\s*Particulars|\n\s*Invoice\s*Qty|$)/gs;
 
   let m;
-  while((m = rowRe.exec(fullText)) !== null){
-    // group 1+2 = normal split, group 3+4 = merged
+  while((m = rowRe.exec(normText)) !== null){
     const brandCode = (m[2] || m[4] || '').trim();
-    const packN     = parseInt(m[5]);
-    const rest      = m[6].replace(/\n/g,' ').replace(/\s+/g,' ').trim();
-    if(!brandCode || isNaN(packN)) continue;
-    const brandNum = `${brandCode} (${packN})`;
+    const packNParen = m[5] ? parseInt(m[5]) : 0;  // from old-format parentheses
+    const rest = m[6].replace(/\n/g,' ').replace(/\s+/g,' ').trim();
 
-    if(/invoice\s*qty|breakage|shortage|reverted|particulars/i.test(rest)) continue;
+    if(!brandCode) continue;
+    if(/invoice\s*qty|breakage|shortage|reverted|particulars|sl\.?\s*no|brand\s*num/i.test(rest)) continue;
+    if(rest.length < 5) continue;
 
     // Product type
     let ptype = 'IML';
-    if(/\bBeer\b/i.test(rest))         ptype = 'Beer';
+    if(/\bBeer\b/i.test(rest) || /\bBeer\b/i.test(fullText.slice(Math.max(0,m.index-5), m.index+20)))
+      ptype = 'Beer';
     else if(/Duty\s*Paid/i.test(rest)) ptype = 'Duty Paid';
 
-    // Pack size
+    // Pack size — "N / NNN ml"
     const psM = rest.match(/(\d+)\s*\/\s*(\d+)\s*ml/i);
     const packSize = psM ? `${psM[1]}/${psM[2]}ml` : '';
+    const packNFromSize = psM ? parseInt(psM[1]) : 0;
+    const packCount = packNParen || packNFromSize;
 
-    // Pack type
-    const ptM  = rest.match(/\b(?:IML|Beer|Duty Paid)\s+([GPC])\b/i);
-    const ppack= ptM ? ptM[1] : '';
+    // Pack type G/P/C
+    const ptM = rest.match(/\b(?:IML|Beer|Duty\s*Paid)\s+([GPC])\b/i);
+    const ppack = ptM ? ptM[1] : '';
 
-    // Brand name: text from after brand-number to the first type keyword (IML/Beer/Duty Paid)
-    // Strip any leading serial number digits, keep alphanumeric brand names
+    // Brand name: everything before the first type keyword (IML/Beer/Duty Paid)
     const typeIdx = rest.search(/\b(IML|Beer|Duty\s+Paid)\b/i);
     let brandName = (typeIdx > 0 ? rest.slice(0, typeIdx) : rest.slice(0, 60))
-      .replace(/^\d+\s+/, '')          // strip leading serial number if captured
-      .replace(/\(\d+\)\s*$/, '')      // strip trailing (packN) if any
+      .replace(/^\d+\s+/, '')
+      .replace(/\(\d+\)\s*$/, '')
       .replace(/[|]/g, ' ')
       .replace(/\s{2,}/g, ' ')
       .trim()
       .slice(0, 80);
 
-    // All numbers in the row
-    const nums = [...rest.matchAll(/[\d,]+\.?\d*/g)]
-      .map(n=>parseFloat(n[0].replace(/,/g,'')))
-      .filter(n=>n>0 && !isNaN(n));
-
-    if(nums.length < 2) continue;
-
-    const total    = nums[nums.length-1];
-    const unitRate = nums[nums.length-2];
-
-    // ── Cases / Btls ─────────────────────────────────────────────────────────
-    // Find the LAST "N / NNN ml" in rest, then read the first two PURE INTEGERS
-    // after it. "Pure integer" = digits only, no comma/dot (rate fragments have those).
-    let casesDel=0, btlsDel=0;
-
+    // ── Cases / Bottles: 2 pure integers immediately after the pack-size token ─
+    // "24 / 500 ml 5 0 3,402.00" → casesDel=5, btlsDel=0
+    // Also handles fused: "ml10" already normalised to "ml 10" above
+    let casesDel = 0, btlsDel = 0;
     const psAll = [...rest.matchAll(/\d+\s*\/\s*\d+\s*ml/gi)];
     const lastPs = psAll[psAll.length - 1];
-
     if(lastPs){
       const afterPs = rest.slice(lastPs.index + lastPs[0].length);
-      // Split on whitespace, take only pure digit tokens ≤ 500
       let found2 = 0;
       for(const tok of afterPs.split(/\s+/)){
         const s = tok.trim();
         if(!s) continue;
-        if(!/^\d+$/.test(s)){
-          if(found2 >= 1) break;  // stop after finding cases if hit non-int
-          continue;
-        }
+        if(!/^\d+$/.test(s)){ if(found2 >= 1) break; continue; }
         const v = parseInt(s);
         if(v > 500) break;
         if(found2 === 0){ casesDel = v; found2++; }
@@ -2340,14 +2275,25 @@ function parseICDCItemsFallback(flatLines){
       }
     }
 
+    // ── Total & unit rate: last two money values in the row ───────────────────
+    const nums = [...rest.matchAll(/[\d,]+\.?\d*/g)]
+      .map(n => parseFloat(n[0].replace(/,/g,'')))
+      .filter(n => n > 0 && !isNaN(n));
+    if(nums.length < 2) continue;
+    const total    = nums[nums.length - 1];
+    const unitRate = nums[nums.length - 2];
+    if(total < 100) continue;
+
+    const brandNum = `${brandCode} (${packCount||'?'})`;
     const k = `${brandNum}_${total}`;
     if(seen.has(k)) continue;
     seen.add(k);
-    if(total>0) items.push({ brandNum, brandName:brandName||brandNum, ptype, ppack, packSize, casesDel, btlsDel, unitRate, total });
+    items.push({ brandNum, brandName: brandName || brandCode, ptype, ppack, packSize, casesDel, btlsDel, unitRate, total });
   }
 
   return items;
 }
+
 
 // ── STORE DETECTION ──────────────────────────────────────
 // Matches retailer name or code from the bill header to a known store
