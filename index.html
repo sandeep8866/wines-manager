@@ -1871,77 +1871,68 @@ async function extractPDF(file){
   const ab  = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({data:ab}).promise;
 
-  // ── Strategy: build two independent text representations ─────────────────
-  // 1) pageLines: per-page, per-row text lines (for fallback text parser)
-  //    Each page is processed independently so y-coords never collide.
-  // 2) rawItems: all items with page-offset y (for coordinate item extractor)
+  // Strategy: two passes per page.
+  // Pass A (COMBINED mode): PDF.js merges adjacent glyphs → clean line strings
+  //   → used for fallback text parser (handles compressed multi-page bills)
+  // Pass B (RAW mode): individual glyph items with x/y → used for header parsing
+  //   and coordinate-aware item extractor (single-page / well-structured bills)
 
-  let rawItems = [];
-  let allPageLines = [];  // array of line-strings across all pages
+  let allPageLines = [];   // one string per visual row, all pages in order
+  let rawItems     = [];   // all glyph items with page-offset y
 
   for(let pi = 1; pi <= pdf.numPages; pi++){
     const pg = await pdf.getPage(pi);
     const vp = pg.getViewport({scale:1});
-    const pageH = vp.height || 842;
+    const pageH   = vp.height || 842;
     const yOffset = (pi - 1) * 10000;
 
-    const tc = await pg.getTextContent({disableCombineTextItems: true, normalizeWhitespace: false});
+    // ── Pass A: COMBINED mode for clean line text ─────────────────────────
+    const tcCombined = await pg.getTextContent({normalizeWhitespace: true});
+    // Group combined items into rows by y (within this page)
+    const combinedItems = tcCombined.items
+      .filter(it => it.str && it.str.trim() && it.transform)
+      .map(it => ({str: it.str, x: it.transform[4], y: it.transform[5]}));
 
-    // ── Per-page: group raw items into rows by y (within this page only) ────
-    const pageItems = [];
-    for(const it of tc.items){
-      if(!it || !it.transform || !Array.isArray(it.transform) || it.transform.length < 6) continue;
-      if(it.str === undefined || it.str === null) continue;
-      pageItems.push({
-        str: it.str,
-        x:   it.transform[4],
-        y:   it.transform[5],   // raw page y (not flipped, not offset)
-        w:   (it.width > 0) ? it.width : 0
-      });
-    }
-
-    // Group into rows within this page (y tolerance = 3pt)
-    const pageRows = [];
-    // Sort by y descending (PDF y=0 is bottom), then x ascending
-    pageItems.sort((a,b) => b.y - a.y || a.x - b.x);
-    for(const it of pageItems){
+    combinedItems.sort((a,b) => b.y - a.y || a.x - b.x);
+    const pageRowsA = [];
+    for(const it of combinedItems){
       let best = null, bestDist = Infinity;
-      for(const r of pageRows){
+      for(const r of pageRowsA){
         const d = Math.abs(r.y - it.y);
-        if(d <= 3 && d < bestDist){ best = r; bestDist = d; }
+        if(d <= 4 && d < bestDist){ best = r; bestDist = d; }
       }
       if(best){ best.cells.push(it); best.y = best.cells.reduce((s,c)=>s+c.y,0)/best.cells.length; }
-      else     { pageRows.push({y: it.y, cells: [it]}); }
+      else     { pageRowsA.push({y: it.y, cells: [it]}); }
     }
-    // Sort rows top→bottom, cells left→right
-    pageRows.sort((a,b) => b.y - a.y);
-    pageRows.forEach(r => r.cells.sort((a,b) => a.x - b.x));
-
-    // Build line strings for this page
-    for(const r of pageRows){
+    pageRowsA.sort((a,b) => b.y - a.y);
+    pageRowsA.forEach(r => r.cells.sort((a,b) => a.x - b.x));
+    for(const r of pageRowsA){
       const line = r.cells.map(c => c.str).join(' ').trim();
       if(line) allPageLines.push(line);
     }
 
-    // Also push into rawItems with page-offset flipped y (for coordinate extractor)
-    for(const it of pageItems){
+    // ── Pass B: RAW mode for coordinate extraction ────────────────────────
+    const tcRaw = await pg.getTextContent({disableCombineTextItems: true, normalizeWhitespace: false});
+    for(const it of tcRaw.items){
+      if(!it || !it.transform || !Array.isArray(it.transform) || it.transform.length < 6) continue;
+      if(it.str === undefined || it.str === null) continue;
       rawItems.push({
         str: it.str,
-        x:   it.x,
-        y:   (pageH - it.y) + yOffset,
-        w:   it.w
+        x:   it.transform[4],
+        y:   (pageH - it.transform[5]) + yOffset,
+        w:   (it.width > 0) ? it.width : 0
       });
     }
   }
 
-  // Sort rawItems: page order, then top-to-bottom within page, left-to-right
+  // Sort rawItems in reading order across all pages
   rawItems.sort((a,b) => a.y - b.y || a.x - b.x);
 
-  // ── Build full text for header parsing ───────────────────────────────────
+  // Build full text for header parsing
   const fullText = allPageLines.join('\n');
   const rawText  = rawItems.map(it=>it.str).join('');
 
-  // ── Cluster rawItems into coordinate rows (for extractItemRows) ───────────
+  // Cluster rawItems into coordinate rows (for extractItemRows)
   const rows = [];
   for(const w of rawItems){
     if(!w.str.trim()) continue;
@@ -1955,16 +1946,14 @@ async function extractPDF(file){
   }
   rows.forEach(r => r.cells.sort((a,b) => a.x - b.x));
 
-  // ── Parse header ──────────────────────────────────────────────────────────
+  // Parse header
   const bill = parseICDCHeader(fullText, rawText);
 
-  // ── Extract line items: try coordinate parser first, fallback to text ─────
-  bill.items = extractItemRows(rows);
-
+  // ── Item extraction: ALWAYS try fallback first (handles all formats) ──────
+  // Coordinate extractor only wins if fallback finds nothing.
   const fbItems = parseICDCItemsFallback(allPageLines);
-  if(fbItems.length > bill.items.length){
-    bill.items = fbItems;
-  }
+  const coordItems = extractItemRows(rows);
+  bill.items = fbItems.length >= coordItems.length ? fbItems : coordItems;
 
   // Dedup by brandNum+total
   const seen = new Set();
