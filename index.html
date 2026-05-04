@@ -1871,124 +1871,97 @@ async function extractPDF(file){
   const ab  = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({data:ab}).promise;
 
-  // ── Pass 1: raw character items from PDF.js ────────────────────────────────
-  // disableCombineTextItems = true → individual glyph-level items, no merging
+  // ── Strategy: build two independent text representations ─────────────────
+  // 1) pageLines: per-page, per-row text lines (for fallback text parser)
+  //    Each page is processed independently so y-coords never collide.
+  // 2) rawItems: all items with page-offset y (for coordinate item extractor)
+
   let rawItems = [];
+  let allPageLines = [];  // array of line-strings across all pages
+
   for(let pi = 1; pi <= pdf.numPages; pi++){
     const pg = await pdf.getPage(pi);
+    const vp = pg.getViewport({scale:1});
+    const pageH = vp.height || 842;
+    const yOffset = (pi - 1) * 10000;
+
     const tc = await pg.getTextContent({disableCombineTextItems: true, normalizeWhitespace: false});
+
+    // ── Per-page: group raw items into rows by y (within this page only) ────
+    const pageItems = [];
     for(const it of tc.items){
-      // Guard: skip MarkedContent items and anything without transform
       if(!it || !it.transform || !Array.isArray(it.transform) || it.transform.length < 6) continue;
       if(it.str === undefined || it.str === null) continue;
-      const s = it.str;
-      rawItems.push({
-        str: s,
+      pageItems.push({
+        str: it.str,
         x:   it.transform[4],
-        y:   it.transform[5],
+        y:   it.transform[5],   // raw page y (not flipped, not offset)
         w:   (it.width > 0) ? it.width : 0
+      });
+    }
+
+    // Group into rows within this page (y tolerance = 3pt)
+    const pageRows = [];
+    // Sort by y descending (PDF y=0 is bottom), then x ascending
+    pageItems.sort((a,b) => b.y - a.y || a.x - b.x);
+    for(const it of pageItems){
+      let best = null, bestDist = Infinity;
+      for(const r of pageRows){
+        const d = Math.abs(r.y - it.y);
+        if(d <= 3 && d < bestDist){ best = r; bestDist = d; }
+      }
+      if(best){ best.cells.push(it); best.y = best.cells.reduce((s,c)=>s+c.y,0)/best.cells.length; }
+      else     { pageRows.push({y: it.y, cells: [it]}); }
+    }
+    // Sort rows top→bottom, cells left→right
+    pageRows.sort((a,b) => b.y - a.y);
+    pageRows.forEach(r => r.cells.sort((a,b) => a.x - b.x));
+
+    // Build line strings for this page
+    for(const r of pageRows){
+      const line = r.cells.map(c => c.str).join(' ').trim();
+      if(line) allPageLines.push(line);
+    }
+
+    // Also push into rawItems with page-offset flipped y (for coordinate extractor)
+    for(const it of pageItems){
+      rawItems.push({
+        str: it.str,
+        x:   it.x,
+        y:   (pageH - it.y) + yOffset,
+        w:   it.w
       });
     }
   }
 
-  // Sort: top of page first (PDF y=0 is bottom → descending y), then left→right
-  rawItems.sort((a,b) => b.y - a.y || a.x - b.x);
+  // Sort rawItems: page order, then top-to-bottom within page, left-to-right
+  rawItems.sort((a,b) => a.y - b.y || a.x - b.x);
 
-  // ── Pass 2: build word tokens from raw items ───────────────────────────────
-  // PDF.js text items may have width=0 for some chars. When width=0, we estimate
-  // the character end position by looking at the NEXT item's x on the same line.
-  // Gap threshold: we consider items on the same word if gap < 30% of avg char width.
-  // This handles both normal PDFs and compressed footer text correctly.
-  let words = [];
-  let wStr = '', wX = 0, wY = 0, wEndX = 0;
-  const flushW = () => { if(wStr.trim()) words.push({str:wStr.trim(), x:wX, y:wY}); wStr=''; };
+  // ── Build full text for header parsing ───────────────────────────────────
+  const fullText = allPageLines.join('\n');
+  const rawText  = rawItems.map(it=>it.str).join('');
 
-  for(let ri = 0; ri < rawItems.length; ri++){
-    const it    = rawItems[ri];
-    const nextIt = rawItems[ri + 1];
-    const itY   = it.y;
-
-    // New line → flush
-    if(wStr && Math.abs(itY - wY) > 2) flushW();
-
-    // Split item on spaces
-    const tokens = it.str.split(/( |\u00A0)/);
-
-    // Item width: use it.w if available; else estimate from next item's x
-    let itemW = it.w;
-    if(!(itemW > 0) && nextIt && Math.abs(nextIt.y - itY) <= 2 && nextIt.x > it.x){
-      // Estimate: the space between this item and next is the gap; distribute proportionally
-      // Use the next item x as end of current if they appear adjacent
-      itemW = nextIt.x - it.x;
-    }
-    const charW = itemW > 0 ? itemW / Math.max(it.str.length, 1) : 2; // fallback 2pt
-    let tx = it.x;
-
-    for(const tok of tokens){
-      if(tok === ' ' || tok === '\u00A0'){
-        flushW();
-        tx += charW;
-        continue;
-      }
-      if(!tok) continue;
-      const tokW = charW * tok.length;
-      const gap  = wEndX > 0 ? tx - wEndX : 0;
-
-      // Word break: gap > 2x typical char width (handles variable spacing)
-      const breakThreshold = Math.max(charW * 2, 3);
-
-      if(!wStr){
-        wStr = tok; wX = tx; wY = itY; wEndX = tx + tokW;
-      } else if(Math.abs(itY - wY) > 2 || gap > breakThreshold){
-        flushW();
-        wStr = tok; wX = tx; wY = itY; wEndX = tx + tokW;
-      } else {
-        wStr += tok; wEndX = tx + tokW;
-      }
-      tx += tokW;
-    }
-    // Update wEndX with actual item end
-    if(it.w > 0){
-      wEndX = it.x + it.w;
-    } else if(itemW > 0){
-      wEndX = it.x + itemW;
-    }
-  }
-  flushW();
-
-  // ── Pass 3: cluster words into rows (y-tolerance = 3pt) ───────────────────
+  // ── Cluster rawItems into coordinate rows (for extractItemRows) ───────────
   const rows = [];
-  for(const w of words){
+  for(const w of rawItems){
+    if(!w.str.trim()) continue;
     let best = null, bestDist = Infinity;
     for(const r of rows){
       const d = Math.abs(r.y - w.y);
       if(d <= 3 && d < bestDist){ best = r; bestDist = d; }
     }
-    if(best){
-      best.cells.push(w);
-      best.y = best.cells.reduce((s,c)=>s+c.y,0) / best.cells.length;
-    } else {
-      rows.push({y: w.y, cells: [w]});
-    }
+    if(best){ best.cells.push(w); best.y = best.cells.reduce((s,c)=>s+c.y,0)/best.cells.length; }
+    else     { rows.push({y: w.y, cells: [w]}); }
   }
   rows.forEach(r => r.cells.sort((a,b) => a.x - b.x));
 
-  // ── Pass 4: build text for header parsing ─────────────────────────────────
-  const flatLines = rows.map(r => r.cells.map(c=>c.str).join(' '));
-  const fullText  = flatLines.join('\n');
-
-  // Also build a raw character stream sorted purely by (y desc, x asc)
-  // This avoids row-clustering corruption of overlapping columns in the header
-  const rawText = rawItems.map(it=>it.str).join('');
-
-  // ── Pass 5: parse header ───────────────────────────────────────────────────
+  // ── Parse header ──────────────────────────────────────────────────────────
   const bill = parseICDCHeader(fullText, rawText);
 
-  // ── Pass 6: extract line items ────────────────────────────────────────────
+  // ── Extract line items: try coordinate parser first, fallback to text ─────
   bill.items = extractItemRows(rows);
 
-  // Fallback to text parser if coordinate parser gets fewer items
-  const fbItems = parseICDCItemsFallback(flatLines);
+  const fbItems = parseICDCItemsFallback(allPageLines);
   if(fbItems.length > bill.items.length){
     bill.items = fbItems;
   }
@@ -2004,6 +1977,7 @@ async function extractPDF(file){
   if(bill.items.length === 0) return null;
   return bill;
 }
+
 
 // ── COORDINATE-AWARE ITEM ROW EXTRACTOR ──────────────────────────────────────
 // Ground truth from actual PDFs:
@@ -2196,56 +2170,65 @@ function extractItemRows(rows){
 }
 
 // ── TEXT FALLBACK PARSER ──────────────────────────────────────────────────────
-// Handles ALL known ICDC bill variants:
-//   Old:    "1 5019 (24) BUDWEISER..."           — brand+pack in parentheses
-//   New:    "1 5019 BUDWEISER... 24 / 500 ml 1 0 3,402.00" — standalone code
-//   Merged: "991102 MORE AND MORE..."             — serial fused to brand code
-//   Fused:  "9 / 1000 ml10"                      — cases number fused after ml
-function parseICDCItemsFallback(flatLines){
+// Handles ALL known ICDC bill line formats. Input is allPageLines — one string
+// per visual row, built per-page so ordering is always correct.
+//
+// Known formats (all confirmed from real PDFs):
+//   Normal:  "1 5016 KING FISHER PREMIUM LAGER BEER Beer G 24 / 330 ml 2 0 2,002.00 / 83.42 4,004.00"
+//   Merged:  "991102 MORE AND MORE DELUXE WHISKY IML P 48 / 180 ml20 3,784.00 / 78.83 7,568.00"
+//            (serial 99 fused to brand 1102, cases 20 fused to ml)
+//   Old fmt: "1 5019 (24) BUDWEISER..." (brand+pack in parens — older bills)
+//   Wrapped: brand name may continue on the next line with no sl# or code
+function parseICDCItemsFallback(lines){
   const items = [];
   const seen  = new Set();
-  const fullText = flatLines.join('\n');
 
-  // ── Normalise: insert space between "ml" and immediately-following digits ──
-  // e.g. "1000 ml10" → "1000 ml 10"  (fused cases number)
-  const normText = fullText.replace(/\bml(\d)/gi, 'ml $1');
+  // Pre-join all lines into one text block, normalising fused "mlN" → "ml N"
+  // and ensuring there's a newline before each serial+brandcode token
+  const fullText = lines.join('\n')
+    .replace(/\bml(\d)/gi, 'ml $1');  // "ml10" → "ml 10"
 
-  // ── UNIVERSAL ROW REGEX ──────────────────────────────────────────────────────
-  // Matches ALL four variants above.
-  // Capture groups:
-  //   1+2 : normal  "84 0546"          sl=1, code=2
-  //   3+4 : merged  "840546"           sl=3, code=4
-  //   5   : pack count in parentheses (old format only)
-  //   6   : rest of line content
-  const rowRe = /(?:^|\n)\s*(?:(\d{1,3})\s+(\d{4})|(\d{1,3})(\d{4}))\s*(?:\((\d+)\))?\s+(.+?)(?=\n\s*(?:\d{1,3}\s+\d{4}|\d{5,7}\s*(?:\(|\s+[A-Z])|\d{5,7}[A-Z])|\n\s*TIN\s*NO|\n\s*Particulars|\n\s*Invoice\s*Qty|$)/gs;
+  // ── Master regex: matches ALL variants in one pass ────────────────────────
+  // Breakdown:
+  //   (?:^|\n)\s*                  — start of line
+  //   (?:(\d{1,3})\s+(\d{4})       — NORMAL: "1 5016" (sl SPACE code)
+  //     |(\d{1,3})(\d{4}))          — MERGED: "995016" (sl fused to code)
+  //   \s*(?:\((\d+)\))?\s+        — optional old-style (packCount)
+  //   (.+?)                          — rest of the item row content
+  //   (?=\n\s*(?:\d{1,3}\s+\d{4}  — lookahead: next sl+code (normal)
+  //     |\d{5,7}\s)                 — or next merged sl+code
+  //     |\n\s*TIN|\n\s*Particulars
+  //     |\n\s*Invoice\s*Qty|$)
+  const rowRe = /(?:^|\n)\s*(?:(\d{1,3})\s+(\d{4})|(\d{1,3})(\d{4}))\s*(?:\((\d+)\))?\s+(.+?)(?=\n\s*(?:\d{1,3}\s+\d{4}|\d{5,7}\s)|\n\s*TIN|\n\s*Particulars|\n\s*Invoice\s*Qty|$)/gs;
 
   let m;
-  while((m = rowRe.exec(normText)) !== null){
-    const brandCode = (m[2] || m[4] || '').trim();
-    const packNParen = m[5] ? parseInt(m[5]) : 0;  // from old-format parentheses
-    const rest = m[6].replace(/\n/g,' ').replace(/\s+/g,' ').trim();
+  while((m = rowRe.exec(fullText)) !== null){
+    // Groups: 1+2=normal, 3+4=merged, 5=old-style packN, 6=rest
+    const brandCode  = (m[2] || m[4] || '').trim();
+    const packNParen = m[5] ? parseInt(m[5]) : 0;
+    const rest       = (m[6] || '').replace(/\n/g,' ').replace(/\s+/g,' ').trim();
 
-    if(!brandCode) continue;
+    if(!brandCode || rest.length < 5) continue;
     if(/invoice\s*qty|breakage|shortage|reverted|particulars|sl\.?\s*no|brand\s*num/i.test(rest)) continue;
-    if(rest.length < 5) continue;
+    // Must have a pack-size pattern to be a real item row
+    if(!/\d+\s*\/\s*\d+\s*ml/i.test(rest)) continue;
 
-    // Product type
+    // ── Product type ─────────────────────────────────────────────────────────
     let ptype = 'IML';
-    if(/\bBeer\b/i.test(rest) || /\bBeer\b/i.test(fullText.slice(Math.max(0,m.index-5), m.index+20)))
-      ptype = 'Beer';
+    if(/\bBeer\b/i.test(rest))        ptype = 'Beer';
     else if(/Duty\s*Paid/i.test(rest)) ptype = 'Duty Paid';
 
-    // Pack size — "N / NNN ml"
-    const psM = rest.match(/(\d+)\s*\/\s*(\d+)\s*ml/i);
+    // ── Pack size "N / NNN ml" ────────────────────────────────────────────────
+    const psM      = rest.match(/(\d+)\s*\/\s*(\d+)\s*ml/i);
     const packSize = psM ? `${psM[1]}/${psM[2]}ml` : '';
     const packNFromSize = psM ? parseInt(psM[1]) : 0;
     const packCount = packNParen || packNFromSize;
 
-    // Pack type G/P/C
-    const ptM = rest.match(/\b(?:IML|Beer|Duty\s*Paid)\s+([GPC])\b/i);
+    // ── Pack type G/P/C ───────────────────────────────────────────────────────
+    const ptM  = rest.match(/\b(?:IML|Beer|Duty\s*Paid)\s+([GPC])\b/i);
     const ppack = ptM ? ptM[1] : '';
 
-    // Brand name: everything before the first type keyword (IML/Beer/Duty Paid)
+    // ── Brand name: text before the first type keyword ────────────────────────
     const typeIdx = rest.search(/\b(IML|Beer|Duty\s+Paid)\b/i);
     let brandName = (typeIdx > 0 ? rest.slice(0, typeIdx) : rest.slice(0, 60))
       .replace(/^\d+\s+/, '')
@@ -2255,36 +2238,34 @@ function parseICDCItemsFallback(flatLines){
       .trim()
       .slice(0, 80);
 
-    // ── Cases / Bottles: 2 pure integers immediately after the pack-size token ─
-    // "24 / 500 ml 5 0 3,402.00" → casesDel=5, btlsDel=0
-    // Also handles fused: "ml10" already normalised to "ml 10" above
+    // ── Cases / Bottles: first two pure integers after the last "N/Nml" ───────
     let casesDel = 0, btlsDel = 0;
     const psAll = [...rest.matchAll(/\d+\s*\/\s*\d+\s*ml/gi)];
     const lastPs = psAll[psAll.length - 1];
     if(lastPs){
       const afterPs = rest.slice(lastPs.index + lastPs[0].length);
-      let found2 = 0;
+      let found = 0;
       for(const tok of afterPs.split(/\s+/)){
         const s = tok.trim();
         if(!s) continue;
-        if(!/^\d+$/.test(s)){ if(found2 >= 1) break; continue; }
+        if(!/^\d+$/.test(s)){ if(found >= 1) break; continue; }
         const v = parseInt(s);
         if(v > 500) break;
-        if(found2 === 0){ casesDel = v; found2++; }
-        else            { btlsDel  = v; break; }
+        if(found === 0){ casesDel = v; found++; }
+        else           { btlsDel  = v; break; }
       }
     }
 
-    // ── Total & unit rate: last two money values in the row ───────────────────
-    const nums = [...rest.matchAll(/[\d,]+\.?\d*/g)]
+    // ── Total (last money value) and unit rate (second-to-last) ──────────────
+    const allNums = [...rest.matchAll(/[\d,]+\.?\d*/g)]
       .map(n => parseFloat(n[0].replace(/,/g,'')))
       .filter(n => n > 0 && !isNaN(n));
-    if(nums.length < 2) continue;
-    const total    = nums[nums.length - 1];
-    const unitRate = nums[nums.length - 2];
+    if(allNums.length < 2) continue;
+    const total    = allNums[allNums.length - 1];
+    const unitRate = allNums[allNums.length - 2];
     if(total < 100) continue;
 
-    const brandNum = `${brandCode} (${packCount||'?'})`;
+    const brandNum = `${brandCode} (${packCount || '?'})`;
     const k = `${brandNum}_${total}`;
     if(seen.has(k)) continue;
     seen.add(k);
@@ -2293,7 +2274,6 @@ function parseICDCItemsFallback(flatLines){
 
   return items;
 }
-
 
 // ── STORE DETECTION ──────────────────────────────────────
 // Matches retailer name or code from the bill header to a known store
