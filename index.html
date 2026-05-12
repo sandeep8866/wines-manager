@@ -909,7 +909,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
     <div class="fg"><label class="fl">Pack (e.g. 48/180ml)</label><input class="fc" type="text" id="ai-pack" placeholder="48/180ml"></div>
   </div>
   <div class="fr">
-    <div class="fg"><label class="fl">Unit Sale Rate ₹</label><input class="fc" type="number" id="ai-rate" placeholder="Per bottle MRP"></div>
+    <div class="fg"><label class="fl">Bottle Rate ₹</label><input class="fc" type="number" id="ai-rate" placeholder="Per bottle MRP"></div>
     <div class="fg"><label class="fl">Opening Qty (cases)</label><input class="fc" type="number" id="ai-open" placeholder="0"></div>
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
@@ -1557,6 +1557,10 @@ function renderQueueCard(r, idx){
         </div>
         <div style="text-align:right;flex-shrink:0">
           ${bill ? `<div style="font-family:'Cormorant Garamond',serif;font-size:1rem;color:var(--gold2)">${fmtR(bill.netInvoice)}</div>
+            ${bill.invoiceValue?`<div style="font-size:.65rem;color:var(--t3)">Invoice Val: ${fmtR(bill.invoiceValue)} · MRP Rounding: ${fmtR(bill.mrpRounding)}</div>`:''}
+            ${bill.eChallan?`<div style="font-size:.65rem;color:var(--blue)">e-Challan: ${fmtR(bill.eChallan)}${bill.eChallanRef?' (Ref: '+bill.eChallanRef+')':''}</div>`:''}
+            ${bill.exciseCess?`<div style="font-size:.65rem;color:var(--t3)">Excise Cess: ${fmtR(bill.exciseCess)} · TCS: ${fmtR(bill.tcs)}${bill.profTax?' · Prof Tax: '+fmtR(bill.profTax):''}</div>`:''}
+            ${bill.creditBalance?`<div style="font-size:.65rem;color:var(--green)">Credit Balance: ${fmtR(bill.creditBalance)}</div>`:''}
                     <div style="font-size:.68rem;color:var(--t3)">${(bill.items||[]).length} brands</div>` : ''}
         </div>
       </div>
@@ -1591,21 +1595,22 @@ function renderQueueCard(r, idx){
           </summary>
           <div class="tbl-wrap" style="margin-top:8px">
             <table>
-              <thead><tr><th>Brand</th><th>Pack</th><th>Type</th>
+              <thead><tr><th>Brand</th><th>Qty</th><th>Size</th><th>Type</th>
                 <th class="num">Cases</th><th class="num">Btls</th>
-                <th class="num">Unit Rate</th><th class="num">Total</th><th></th></tr></thead>
+                <th class="num">Btl Rate</th><th class="num">Total</th><th></th></tr></thead>
               <tbody>${bill.items.map((it,ii)=>`
                 <tr>
-                  <td><input class="fc" style="width:140px;padding:2px 5px;font-size:.7rem"
+                  <td><input class="fc" style="width:130px;padding:2px 5px;font-size:.7rem"
                       value="${esc(it.brandName)}" id="qn-${idx}-${ii}"></td>
-                  <td style="font-size:.68rem;color:var(--t3)">${it.packSize||''}</td>
+                  <td style="font-size:.7rem;color:var(--t2);text-align:center">${it.packQty||''}</td>
+                  <td style="font-size:.7rem;color:var(--t2);text-align:center">${it.sizeML?it.sizeML+'ml':''}</td>
                   <td><span class="tag ${it.ptype==='Beer'?'tag-beer':it.ptype==='Duty Paid'?'tag-dp':'tag-iml'}">${it.ptype}</span></td>
                   <td class="num"><input class="fc" type="number" style="width:48px;padding:2px 5px;font-size:.7rem;text-align:right"
                       value="${it.casesDel}" id="qc-${idx}-${ii}"></td>
                   <td class="num"><input class="fc" type="number" style="width:38px;padding:2px 5px;font-size:.7rem;text-align:right"
                       value="${it.btlsDel}" id="qb-${idx}-${ii}"></td>
                   <td class="num"><input class="fc" type="number" style="width:65px;padding:2px 5px;font-size:.7rem;text-align:right"
-                      value="${it.unitRate}" id="qu-${idx}-${ii}"></td>
+                      value="${(it.btlRate||it.unitRate||0)}" id="qu-${idx}-${ii}"></td>
                   <td class="num" style="color:var(--gold2);font-size:.75rem">${fmtR(it.total)}</td>
                   <td><button class="btn btn-xs btn-out" onclick="removeQueueItem(${idx},${ii})">✕</button></td>
                 </tr>`).join('')}
@@ -1650,7 +1655,9 @@ async function saveAllReady(){
       packSize:  it.packSize,
       casesDel:  parseFloat(document.getElementById(`qc-${idx}-${ii}`)?.value) || it.casesDel,
       btlsDel:   parseFloat(document.getElementById(`qb-${idx}-${ii}`)?.value) || it.btlsDel,
-      unitRate:  parseFloat(document.getElementById(`qu-${idx}-${ii}`)?.value) || it.unitRate,
+      btlRate:   parseFloat(document.getElementById(`qu-${idx}-${ii}`)?.value) || it.btlRate || it.unitRate || 0,
+      packQty:   it.packQty || 0,
+      sizeML:    it.sizeML  || 0,
       total:     it.total
     }));
 
@@ -1675,11 +1682,13 @@ async function saveAllReady(){
       tcs:          r.bill.tcs          || 0,
       profTax:      r.bill.profTax      || 0,
       amtCredited:  r.bill.amtCredited  || 0,
+      eChallanRef:  r.bill.eChallanRef  || '',
+      creditBalance:r.bill.creditBalance|| 0,
       totalCases:   r.bill.totalCases   || 0,
       totalBtls:    r.bill.totalBtls    || 0,
     });
     sa('bills', bills);
-    items.forEach(it => addToStock(it.brandName, it.brandNum, it.ptype, it.packSize, it.casesDel, it.unitRate, it.btlsDel));
+    items.forEach(it => addToStock(it.brandName, it.brandNum, it.ptype, it.packSize, it.casesDel, it.btlRate||it.unitRate||0, it.btlsDel));
 
     CS = prevCS; // restore
     savedCount++;
@@ -2151,7 +2160,10 @@ function extractItemRows(rows){
     }
 
     if(total > 0){
-      items.push({ brandNum, brandName:brandName.trim(), ptype, ppack, packSize, casesDel, btlsDel, unitRate, total });
+      const pqMC    = packSize.match(/^(\d+)\/(\d+)ml$/i);
+      const packQtyC = pqMC ? parseInt(pqMC[1]) : 0;
+      const sizeMLc  = pqMC ? parseInt(pqMC[2]) : 0;
+      items.push({ brandNum, brandName:brandName.trim(), ptype, ppack, packSize, packQty:packQtyC, sizeML:sizeMLc, casesDel, btlsDel, btlRate:unitRate, caseRate:0, total });
     }
   }
 
@@ -2254,11 +2266,20 @@ function parseICDCItemsFallback(lines){
     const unitRate = allNums[allNums.length - 2];
     if(total < 100) continue;
 
+    // btlRate is second-to-last money value; total is last
+    // Format: "... cases btls caseRate / btlRate total"
+    const btlRate  = allNums[allNums.length - 2];
+    const caseRate = allNums.length >= 3 ? allNums[allNums.length - 3] : 0;
+    // Split packSize into components
+    const pqM    = packSize.match(/^(\d+)\/(\d+)ml$/i);
+    const packQty = pqM ? parseInt(pqM[1]) : 0;
+    const sizeML  = pqM ? parseInt(pqM[2]) : 0;
+
     const brandNum = `${brandCode} (${packCount || '?'})`;
     const k = `${brandNum}_${total}`;
     if(seen.has(k)) continue;
     seen.add(k);
-    items.push({ brandNum, brandName: brandName || brandCode, ptype, ppack, packSize, casesDel, btlsDel, unitRate, total });
+    items.push({ brandNum, brandName: brandName || brandCode, ptype, ppack, packSize, packQty, sizeML, casesDel, btlsDel, btlRate, caseRate, total });
   }
 
   return items;
@@ -2297,6 +2318,7 @@ function parseICDCHeader(text, rawText){
     eChallan:0, prevCredit:0, subTotal:0,
     invoiceValue:0, mrpRounding:0, netInvoice:0,
     exciseCess:0, tcs:0, profTax:0, amtCredited:0,
+    eChallanRef:'', creditBalance:0,
     totalCases:0, totalBtls:0,
     items:[]
   };
@@ -2419,6 +2441,14 @@ function parseICDCHeader(text, rawText){
     money(/[Cc]redit\s*[Bb]alance[^:]*:?\s*Rs\.?\s*([\d,]+\.?\d*)/) ||
     money(/[Aa]mount\s*[Cc]redited[^:]*:?\s*Rs\.?\s*([\d,]+\.?\d*)/);
 
+  // e-Challan reference number "No.e-challan/DD:1" or "No.e-challan/DD:1.6503..."
+  const eChallanRefM = text.match(/No\.e-challan\/DD[:\s]*([\w\.]+)/i);
+  if(eChallanRefM) bill.eChallanRef = eChallanRefM[1].trim();
+
+  // Retailer Credit Balance (the closing balance shown at bill bottom)
+  const creditBalM = text.match(/Retailer\s*Credit\s*Balance[^:]*:\s*Rs\.?\s*([\d,]+\.?\d*)/i);
+  if(creditBalM) bill.creditBalance = parseFloat(creditBalM[1].replace(/,/g,''));
+
   // Total Cases & Bottles Delivered — last pair in "Total (Cases/Btls):" line
   // Format: "Total (Cases/Btls): IMFL_cases / IMFL_btls Beer_cases / Beer_btls TOTAL_cases / TOTAL_btls"
   const tcLine = text.match(/Total\s*\(Cases\/Btls\)[^0-9]*([\d\s\/]+)/i);
@@ -2453,7 +2483,8 @@ function parseDate(str){
 const getStock = () => ls('stock')||{};
 const setStock = s => ss('stock',s);
 
-function addToStock(name, bnum, ptype, packSize, cases, unitRate, btlsDel){
+function addToStock(name, bnum, ptype, packSize, cases, btlRate, btlsDel){
+  const unitRate = btlRate; // alias for internal stock compatibility
   const stock    = getStock();
   const cleanName= (name||'').replace(/^\d{4}\s*\(\d+\)\s*/,'').trim() || name;
   const isCodeOnly = /^\d{4}\s*\(\d+\)\s*$/.test((name||'').trim());
@@ -2503,6 +2534,7 @@ function addStockItem(){
     bnum: document.getElementById('ai-bnum').value.trim(),
     ptype: document.getElementById('ai-ptype').value,
     packSize: document.getElementById('ai-pack').value.trim(),
+    btlRate:  parseFloat(document.getElementById('ai-rate').value)||0,
     unitRate: parseFloat(document.getElementById('ai-rate').value)||0,
     opening: parseFloat(document.getElementById('ai-open').value)||0,
     purchased: 0, closing: 0
@@ -2546,7 +2578,7 @@ function renderStockTable(){
   }
   tbody.innerHTML = items.map(s=>{
     const saleQty = Math.max(0,(s.opening||0)+(s.purchased||0)-(s.closing||0));
-    const saleVal = saleQty*(s.unitRate||0);
+    const saleVal = saleQty*(s.btlRate||s.unitRate||0);
     const displayName = cleanBrandName(s.name, s.bnum);
     const codeLabel   = s.bnum || extractCodeFromName(s.name) || '';
     return `<tr>
@@ -2627,7 +2659,7 @@ function saveClosingInline(){
       closing:  qty,
       saleQty:  Math.max(0,(s.opening||0)+(s.purchased||0)-qty),
       unitRate: s.unitRate||0,
-      saleVal:  Math.max(0,(s.opening||0)+(s.purchased||0)-qty)*(s.unitRate||0)
+      saleVal:  Math.max(0,(s.opening||0)+(s.purchased||0)-qty)*(s.btlRate||s.unitRate||0)
     });
   });
 
@@ -2685,7 +2717,7 @@ function saveClosing(){
       opening:s.opening||0, purchased:s.purchased||0, closing:qty,
       saleQty:Math.max(0,(s.opening||0)+(s.purchased||0)-qty),
       unitRate:s.unitRate||0,
-      saleVal:Math.max(0,(s.opening||0)+(s.purchased||0)-qty)*(s.unitRate||0)
+      saleVal:Math.max(0,(s.opening||0)+(s.purchased||0)-qty)*(s.btlRate||s.unitRate||0)
     });
   });
 
@@ -2773,7 +2805,7 @@ function renderClosingHistory(){
               <td class="num" style="color:#1a6fa8">${e.purchased}</td>
               <td class="num" style="font-weight:700;color:var(--gold2)">${e.closing}</td>
               <td class="num" style="font-weight:700;color:var(--green)">${e.saleQty}</td>
-              <td class="num" style="color:var(--t3)">${fmtR(e.unitRate)}</td>
+              <td class="num" style="color:var(--t3)">${fmtR(e.btlRate||e.unitRate||0)}</td>
               <td class="num" style="color:var(--green);font-weight:600">${fmtR(e.saleVal)}</td>
             </tr>`).join('')}
           <tr style="font-weight:700;background:var(--s2)">
@@ -2804,9 +2836,9 @@ function exportClosingExcel(date){
   const entry = getClosingLog().find(l=>l.date===date);
   if(!entry){ toast('No entry found'); return; }
   const data = entry.entries.sort((a,b)=>a.name.localeCompare(b.name)).map(e=>({
-    'Brand Name':e.name, 'Pack':e.packSize||'', 'Type':e.ptype,
+    'Brand Name':e.name, 'Pack Qty':e.packQty||'', 'Size':e.sizeML?(e.sizeML+'ml'):'', 'Pack':e.packSize||'', 'Type':e.ptype,
     'Opening':e.opening, 'Purchased':e.purchased, 'Closing':e.closing,
-    'Sale Qty':e.saleQty, 'Unit Rate':e.unitRate, 'Sale Value':e.saleVal
+    'Sale Qty':e.saleQty, 'Btl Rate':e.btlRate||e.unitRate||0, 'Sale Value':e.saleVal
   }));
   const cols = Object.keys(data[0]||{});
   const aoa = [
@@ -2869,7 +2901,7 @@ function renderBillTally(){
       const pd=getPriceData(bn,sml);
       const cessKey=`${b.id}_${bn}_${sml}`;
       const cess=getTallyCess(cessKey, globalCess);
-      const issueAmt=pd?cases*pd[0]:(it.unitRate?cases*it.unitRate*packQty:0);
+      const issueAmt=pd?cases*pd[0]:((it.btlRate||it.unitRate)?cases*(it.btlRate||it.unitRate)*packQty:0);
       const marginAmt=pd?totalBtl*pd[1]:0;
       const cessAmt=cess*totalBtl;
       return {it,bn,sml,packQty,totalBtl,cessKey,cess,issueAmt,marginAmt,cessAmt,
@@ -2935,7 +2967,8 @@ function renderBillTally(){
                     ${esc(cleanBrandName(r.it.brandName||r.it.bnum,r.it.brandNum||r.it.bnum))}
                     ${!r.hasPd?`<span style="color:var(--red);font-size:.58rem"> ⚠</span>`:''}
                   </td>
-                  <td style="padding:5px 4px;text-align:center;color:var(--t3)">${r.it.packSize||'—'}</td>
+                  <td style="padding:5px 4px;text-align:center;color:var(--t3)">${r.it.packQty||''}</td>
+                  <td style="padding:5px 4px;text-align:center;color:var(--t3)">${r.it.sizeML?r.it.sizeML+'ml':(r.it.packSize||'—')}</td>
                   <td style="padding:5px 4px;text-align:right">${r.it.casesDel||0}</td>
                   <td style="padding:5px 4px;text-align:right">${r.it.btlsDel||0}</td>
                   <td style="padding:5px 4px;text-align:right;font-weight:600">${r.totalBtl}</td>
@@ -2996,7 +3029,7 @@ function renderPurchaseList(){
       </div>
       <div class="tbl-wrap">
         <table>
-          <thead><tr><th>Brand</th><th>Pack</th><th>Type</th><th class="num">Cases</th><th class="num">Btls</th><th class="num">Net Total</th></tr></thead>
+          <thead><tr><th>Brand</th><th>Qty</th><th>Size</th><th>Type</th><th class="num">Cases</th><th class="num">Btls</th><th class="num">Btl Rate</th><th class="num">Total</th></tr></thead>
           <tbody>${b.items.map(it=>{
             const isCodeOnly = /^\d{4}\s*\(\d+\)\s*$/.test((it.brandName||'').trim());
             const displayName = isCodeOnly
@@ -3008,13 +3041,29 @@ function renderPurchaseList(){
                 <div style="font-weight:500">${esc(displayName)}</div>
                 ${subCode?`<div style="color:var(--t3);font-size:.65rem">${esc(subCode)}</div>`:''}
               </td>
-              <td style="font-size:.7rem;color:var(--t3)">${it.packSize||''}</td>
+              <td style="font-size:.7rem;color:var(--t2);text-align:center">${it.packQty||it.packSize?.split('/')[0]||''}</td>
+              <td style="font-size:.7rem;color:var(--t2);text-align:center">${it.sizeML?it.sizeML+'ml':(it.packSize?.split('/')[1]||'')}</td>
               <td><span class="tag ${it.ptype==='Beer'?'tag-beer':it.ptype==='Duty Paid'?'tag-dp':'tag-iml'}">${it.ptype}</span></td>
               <td class="num">${it.casesDel||0}</td>
               <td class="num">${it.btlsDel||0}</td>
+              <td class="num" style="font-size:.72rem;color:var(--t3)">${fmtR(it.btlRate||it.unitRate||0)}</td>
               <td class="num" style="color:var(--gold2)">${fmtR(it.total)}</td>
             </tr>`;}).join('')}</tbody>
         </table>
+      </div>
+      <div style="margin-top:8px;padding:8px 10px;background:var(--s2);border-radius:7px;border:1px solid var(--border);font-size:.72rem">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px 12px">
+          ${b.invoiceValue?`<span style="color:var(--t3)">Invoice Value:</span><span style="text-align:right;font-weight:600">${fmtR(b.invoiceValue)}</span>`:''}
+          ${b.mrpRounding?`<span style="color:var(--t3)">MRP Rounding:</span><span style="text-align:right">${fmtR(b.mrpRounding)}</span>`:''}
+          <span style="color:var(--t3)">Net Invoice:</span><span style="text-align:right;font-weight:700;color:var(--gold2)">${fmtR(b.netInvoice||0)}</span>
+          ${b.eChallan?`<span style="color:var(--t3)">e-Challan/DD:</span><span style="text-align:right;color:var(--blue)">${fmtR(b.eChallan)}${b.eChallanRef?' <small>('+esc(b.eChallanRef)+')</small>':''}</span>`:''}
+          ${b.prevCredit?`<span style="color:var(--t3)">Prev Credit:</span><span style="text-align:right">${fmtR(b.prevCredit)}</span>`:''}
+          ${b.subTotal?`<span style="color:var(--t3)">Sub Total:</span><span style="text-align:right">${fmtR(b.subTotal)}</span>`:''}
+          ${b.exciseCess?`<span style="color:var(--t3)">Excise Cess:</span><span style="text-align:right">${fmtR(b.exciseCess)}</span>`:''}
+          ${b.tcs?`<span style="color:var(--t3)">TCS:</span><span style="text-align:right">${fmtR(b.tcs)}</span>`:''}
+          ${b.profTax?`<span style="color:var(--t3)">Prof Tax:</span><span style="text-align:right">${fmtR(b.profTax)}</span>`:''}
+          ${b.creditBalance||b.amtCredited?`<span style="color:var(--t3)">Credit Balance:</span><span style="text-align:right;color:var(--green);font-weight:600">${fmtR(b.creditBalance||b.amtCredited||0)}</span>`:''}
+        </div>
       </div>
       <button class="btn btn-xs btn-out" onclick="delBill(${b.id})" style="margin-top:8px;color:var(--red)">🗑 Delete Bill</button>
     </div>`).join('');
@@ -5059,13 +5108,15 @@ async function fetchGdrivePDFs(refetchAll){
             ...ex,
             eChallan:     parsed.eChallan     || ex.eChallan     || 0,
             prevCredit:   parsed.prevCredit   || ex.prevCredit   || 0,
-            subTotal:     parsed.subTotal     || ex.subTotal     || 0,
-            invoiceValue: parsed.invoiceValue || ex.invoiceValue || 0,
-            mrpRounding:  parsed.mrpRounding  || ex.mrpRounding  || 0,
-            netInvoice:   parsed.netInvoice   || ex.netInvoice   || 0,
-            exciseCess:   parsed.exciseCess   || ex.exciseCess   || 0,
-            tcs:          parsed.tcs          || ex.tcs          || 0,
-            amtCredited:  parsed.amtCredited  || ex.amtCredited  || 0,
+            subTotal:      parsed.subTotal      || ex.subTotal      || 0,
+            invoiceValue:  parsed.invoiceValue  || ex.invoiceValue  || 0,
+            mrpRounding:   parsed.mrpRounding   || ex.mrpRounding   || 0,
+            netInvoice:    parsed.netInvoice    || ex.netInvoice    || 0,
+            exciseCess:    parsed.exciseCess    || ex.exciseCess    || 0,
+            tcs:           parsed.tcs           || ex.tcs           || 0,
+            amtCredited:   parsed.amtCredited   || ex.amtCredited   || 0,
+            eChallanRef:   parsed.eChallanRef   || ex.eChallanRef   || '',
+            creditBalance: parsed.creditBalance || ex.creditBalance || 0,
           };
           sa('bills', bills);
           updated++;
@@ -5080,11 +5131,13 @@ async function fetchGdrivePDFs(refetchAll){
             prevCredit: parsed.prevCredit||0, subTotal: parsed.subTotal||0,
             invoiceValue: parsed.invoiceValue||0, mrpRounding: parsed.mrpRounding||0,
             exciseCess: parsed.exciseCess||0, tcs: parsed.tcs||0,
-            amtCredited: parsed.amtCredited||0, storeNum: targetStore
+            profTax: parsed.profTax||0, amtCredited: parsed.amtCredited||0,
+            eChallanRef: parsed.eChallanRef||'', creditBalance: parsed.creditBalance||0,
+            storeNum: targetStore
           };
           bills.push(newBill);
           sa('bills', bills);
-          (parsed.items||[]).forEach(it => addToStock(it.brandName,it.brandNum,it.ptype,it.packSize,it.casesDel,it.unitRate,it.btlsDel));
+          (parsed.items||[]).forEach(it => addToStock(it.brandName,it.brandNum,it.ptype,it.packSize,it.casesDel,it.btlRate||it.unitRate||0,it.btlsDel));
           saved++;
           if(log) log.innerHTML = `🆕 New: ${f.name.slice(0,25)}<br>` + log.innerHTML;
         } else {
@@ -5158,16 +5211,18 @@ async function reprocessPDFs(files, st){
         bills[existingIdx] = {
           ...existing,
           // Update financial fields from fresh parse
-          eChallan:     parsed.eChallan     || existing.eChallan     || 0,
-          prevCredit:   parsed.prevCredit   || existing.prevCredit   || 0,
-          subTotal:     parsed.subTotal     || existing.subTotal     || 0,
-          invoiceValue: parsed.invoiceValue || existing.invoiceValue || 0,
-          mrpRounding:  parsed.mrpRounding  || existing.mrpRounding  || 0,
-          netInvoice:   parsed.netInvoice   || existing.netInvoice   || 0,
-          exciseCess:   parsed.exciseCess   || existing.exciseCess   || 0,
-          tcs:          parsed.tcs          || existing.tcs          || 0,
-          profTax:      parsed.profTax      || existing.profTax      || 0,
-          amtCredited:  parsed.amtCredited  || existing.amtCredited  || 0,
+          eChallan:      parsed.eChallan      || existing.eChallan      || 0,
+          prevCredit:    parsed.prevCredit    || existing.prevCredit    || 0,
+          subTotal:      parsed.subTotal      || existing.subTotal      || 0,
+          invoiceValue:  parsed.invoiceValue  || existing.invoiceValue  || 0,
+          mrpRounding:   parsed.mrpRounding   || existing.mrpRounding   || 0,
+          netInvoice:    parsed.netInvoice    || existing.netInvoice    || 0,
+          exciseCess:    parsed.exciseCess    || existing.exciseCess    || 0,
+          tcs:           parsed.tcs           || existing.tcs           || 0,
+          profTax:       parsed.profTax       || existing.profTax       || 0,
+          amtCredited:   parsed.amtCredited   || existing.amtCredited   || 0,
+          eChallanRef:   parsed.eChallanRef   || existing.eChallanRef   || '',
+          creditBalance: parsed.creditBalance || existing.creditBalance || 0,
           totalCases:   parsed.totalCases   || existing.totalCases   || 0,
           totalBtls:    parsed.totalBtls    || existing.totalBtls    || 0,
         };
@@ -5182,23 +5237,25 @@ async function reprocessPDFs(files, st){
           icdc: parsed.icdc,
           retailer: parsed.retailer || SI(storeNum).name,
           items: parsed.items || [],
-          netInvoice: parsed.netInvoice || 0,
-          eChallan: parsed.eChallan || 0,
-          prevCredit: parsed.prevCredit || 0,
-          subTotal: parsed.subTotal || 0,
-          invoiceValue: parsed.invoiceValue || 0,
-          mrpRounding: parsed.mrpRounding || 0,
-          exciseCess: parsed.exciseCess || 0,
-          tcs: parsed.tcs || 0,
-          profTax: parsed.profTax || 0,
-          amtCredited: parsed.amtCredited || 0,
+          netInvoice:    parsed.netInvoice    || 0,
+          eChallan:      parsed.eChallan      || 0,
+          prevCredit:    parsed.prevCredit    || 0,
+          subTotal:      parsed.subTotal      || 0,
+          invoiceValue:  parsed.invoiceValue  || 0,
+          mrpRounding:   parsed.mrpRounding   || 0,
+          exciseCess:    parsed.exciseCess    || 0,
+          tcs:           parsed.tcs           || 0,
+          profTax:       parsed.profTax       || 0,
+          amtCredited:   parsed.amtCredited   || 0,
+          eChallanRef:   parsed.eChallanRef   || '',
+          creditBalance: parsed.creditBalance || 0,
           totalCases: parsed.totalCases || 0,
           totalBtls: parsed.totalBtls || 0,
           storeNum
         });
         sa('bills', bills);
         // Update stock
-        (parsed.items||[]).forEach(it => addToStock(it.brandName,it.brandNum,it.ptype,it.packSize,it.casesDel,it.unitRate,it.btlsDel));
+        (parsed.items||[]).forEach(it => addToStock(it.brandName,it.brandNum,it.ptype,it.packSize,it.casesDel,it.btlRate||it.unitRate||0,it.btlsDel));
         added++;
       }
       CS = prevCS;
@@ -5383,7 +5440,7 @@ function renderMRPTable(){
     const brandCode   = s.bnum || extractCodeFromName(s.name) || '';
     const sizeML      = parseInt((s.packSize||'').split('/').pop()) || 0;
     const packQty     = parseInt((s.packSize||'12').split('/')[0]) || 12;
-    const missingMrp  = !s.unitRate || s.unitRate<=0;
+    const missingMrp  = !(s.btlRate||s.unitRate) || (s.btlRate||s.unitRate)<=0;
     const missingIss  = !s.issuePrice || s.issuePrice<=0;
 
     // Try to get price from embedded list for preview
@@ -5396,7 +5453,7 @@ function renderMRPTable(){
 
     return `<tr data-name="${esc(displayName.toUpperCase())}" data-code="${esc(brandCode)}"
         data-pack="${sizeML}" data-type="${s.ptype||''}"
-        data-issue="${s.issuePrice||0}" data-margin="${s.spMargin||0}" data-mrp="${s.unitRate||0}"
+        data-issue="${s.issuePrice||0}" data-margin="${s.spMargin||0}" data-mrp="${s.btlRate||s.unitRate||0}"
         ${(missingMrp||missingIss)?'style="background:rgba(220,50,50,.04)"':''}>
       <td style="max-width:180px;white-space:normal;word-break:break-word;font-size:.78rem;font-weight:600">
         ${esc(displayName)}
@@ -5436,13 +5493,13 @@ function renderMRPTable(){
         <div style="font-size:.65rem;color:var(--t3);text-align:right;margin-bottom:1px">per bottle</div>
         <input class="fc" type="number" step="0.01"
           style="width:80px;padding:4px 6px;text-align:right;font-size:.82rem;font-weight:600;${missingMrp?'border-color:rgba(220,50,50,.5);':''}"
-          value="${s.unitRate||''}" placeholder="0.00"
+          value="${s.btlRate||s.unitRate||''}" placeholder="0.00"
           title="MRP per bottle"
           onchange="saveSingleMRP('${s.id}',this.value)"
           onblur="saveSingleMRP('${s.id}',this.value)">
       </td>
       <td class="num" style="font-size:.75rem;color:var(--t3)">
-        ${s.unitRate&&s.issuePrice?`₹${((s.unitRate*packQty)-s.issuePrice).toFixed(2)}`:'—'}
+        ${(s.btlRate||s.unitRate)&&s.issuePrice?`₹${(((s.btlRate||s.unitRate)*packQty)-s.issuePrice).toFixed(2)}`:'—'}
       </td>
       <td><button class="btn btn-xs btn-out" onclick="delStock('${s.id}')" style="color:var(--red)">🗑</button></td>
     </tr>`;
@@ -5539,7 +5596,7 @@ function savePriceField(id, field, val){
 function saveSingleMRP(id, val){
   const stock = getStock();
   if(!stock[id]) return;
-  stock[id].unitRate = parseFloat(val)||0;
+  stock[id].btlRate = parseFloat(val)||0; stock[id].unitRate = parseFloat(val)||0;
   setStock(stock);
   renderStockTable();
   renderDash();
@@ -5624,7 +5681,7 @@ function updateTodayRow(id){
   const btls  = parseFloat(document.getElementById(`tc-btls-${id}`)?.value)||0;
   const totalBtls = cases*packQty + btls;
   const saleQty   = balance - totalBtls;          // allow negative
-  const saleVal   = saleQty * (s.unitRate||0);
+  const saleVal   = saleQty * (s.btlRate||s.unitRate||0);
   const saleColor = saleQty < 0 ? 'var(--red)' : 'var(--gold2)';
   const tb = document.getElementById(`tc-totbtls-${id}`);
   const sq = document.getElementById(`tc-saleqty-${id}`);
@@ -5672,7 +5729,7 @@ function saveTodayClosing(){
     s.todayCloseBtls  = btls;
     s.closing = totalBtls; // sync to main closing field
     const saleQty = balance - totalBtls;   // allow negative
-    totalSaleVal += saleQty * (s.unitRate||0);
+    totalSaleVal += saleQty * (s.btlRate||s.unitRate||0);
   });
   setStock(stock);
   renderStockTable();
@@ -5806,7 +5863,7 @@ function autoPopulatePrices() {
     let changed = false;
     if(!s.issuePrice && pd[0]) { s.issuePrice = pd[0]; changed = true; }
     if(!s.spMargin  && pd[1]) { s.spMargin   = pd[1]; changed = true; }
-    if(!s.unitRate  && pd[2]) { s.unitRate   = pd[2]; changed = true; }
+    if(!s.btlRate && !s.unitRate && pd[2]) { s.btlRate = pd[2]; s.unitRate = pd[2]; changed = true; }
     if(changed) { updated++; }
   });
   if(updated > 0) {
@@ -5898,7 +5955,7 @@ async function extractPriceListPDF(file){
       if(seen.has(key)) continue;
       seen.add(key);
       items.push({code:codeStr, brandName, packSize, packQty, sizeML, sizeCode,
-                  issuePrice:issuePricePerBtl, issuePerCase:issuePricePerCase, mrp});
+                  issuePrice:issuePricePerBtl, issuePerCase:issuePricePerCase, mrp, btlRate:mrp, unitRate:mrp});
     }
   }
   return items;
@@ -5969,7 +6026,7 @@ async function parseMRPFile(file){
           return sML === pi.sizeML;
         });
         if(match){
-          match.unitRate   = pi.mrp;
+          match.btlRate = pi.mrp; match.unitRate = pi.mrp;
           match.issuePrice = pi.issuePrice;  // already per bottle
           if(pi.code && !match.bnum) match.bnum = pi.code;
           updated++;
@@ -6018,10 +6075,10 @@ async function parseMRPFile(file){
         const pm=!pack||!s.packSize||s.packSize===pack;
         return nm&&pm;
       });
-      if(match){ match.unitRate=mrp; if(ip) match.issuePrice=ip; if(sm) match.spMargin=sm; updated++; }
+      if(match){ match.btlRate=mrp; match.unitRate=mrp; if(ip) match.issuePrice=ip; if(sm) match.spMargin=sm; updated++; }
       else{
         const id='st_'+Date.now()+'_'+Math.random().toString(36).slice(2,5);
-        stock[id]={id,name,bnum:'',ptype:'IML',packSize:pack,unitRate:mrp,issuePrice:ip,spMargin:sm,opening:0,purchased:0,closing:0};
+        stock[id]={id,name,bnum:'',ptype:'IML',packSize:pack,btlRate:mrp,unitRate:mrp,issuePrice:ip,spMargin:sm,opening:0,purchased:0,closing:0};
         added++;
       }
     }
