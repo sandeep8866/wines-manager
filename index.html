@@ -1688,7 +1688,7 @@ async function saveAllReady(){
       totalBtls:    r.bill.totalBtls    || 0,
     });
     sa('bills', bills);
-    items.forEach(it => addToStock(it.brandName, it.brandNum, it.ptype, it.packSize, it.casesDel, it.btlRate||it.unitRate||0, it.btlsDel));
+    items.forEach(it => addToStock(it.brandName, it.brandNum, it.ptype, it.packSize, it.casesDel, it.btlRate||it.unitRate||0, it.btlsDel, it.packQty||0, it.sizeML||0));
 
     CS = prevCS; // restore
     savedCount++;
@@ -2483,16 +2483,19 @@ function parseDate(str){
 const getStock = () => ls('stock')||{};
 const setStock = s => ss('stock',s);
 
-function addToStock(name, bnum, ptype, packSize, cases, btlRate, btlsDel){
+function addToStock(name, bnum, ptype, packSize, cases, btlRate, btlsDel, packQtyIn, sizeMLIn){
   const unitRate = btlRate; // alias for internal stock compatibility
-  const stock    = getStock();
-  const cleanName= (name||'').replace(/^\d{4}\s*\(\d+\)\s*/,'').trim() || name;
+  // Derive packQty and sizeML from packSize string if not passed directly
+  const pqM2   = (packSize||'').match(/(\d+)[\/](\d+)ml/i);
+  const _packQty = packQtyIn || (pqM2?parseInt(pqM2[1]):0);
+  const _sizeML  = sizeMLIn  || (pqM2?parseInt(pqM2[2]):0);
+  const stock      = getStock();
+  const cleanName  = (name||'').replace(/^\d{4}\s*\(\d+\)\s*/,'').trim() || name;
   const isCodeOnly = /^\d{4}\s*\(\d+\)\s*$/.test((name||'').trim());
-  const code4    = (bnum||'').match(/^(\d{4})/)?.[1] || '';
+  const code4      = (bnum||'').match(/^(\d{4})/)?.[1] || '';
 
-  // Convert cases → bottles using pack size  e.g. "48/180ml" → packQty=48
-  const packQty  = parseInt((packSize||'').match(/^(\d+)/)?.[1]) || 1;
-  const bottlesDel = (cases * packQty) + (btlsDel||0);
+  // Use _packQty (from stored packQty or parsed from packSize string)
+  const bottlesDel = (cases * (_packQty || 1)) + (btlsDel||0);
 
   let found = Object.values(stock).find(s => {
     const sCode = (s.bnum||'').match(/^(\d{4})/)?.[1] || '';
@@ -2506,8 +2509,10 @@ function addToStock(name, bnum, ptype, packSize, cases, btlRate, btlsDel){
     found.purchased = (found.purchased||0) + bottlesDel;
     if(!isCodeOnly && cleanName && cleanName.length > 3) found.name = cleanName;
     if(code4 && !found.bnum) found.bnum = code4;
-    if(unitRate) found.unitRate = unitRate;
+    if(unitRate)   { found.unitRate = unitRate; found.btlRate = unitRate; }
     if(packSize && !found.packSize) found.packSize = packSize;
+    if(_packQty && !found.packQty) found.packQty = _packQty;
+    if(_sizeML  && !found.sizeML)  found.sizeML  = _sizeML;
   } else {
     const id = 'st_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
     stock[id] = {
@@ -2515,7 +2520,10 @@ function addToStock(name, bnum, ptype, packSize, cases, btlRate, btlsDel){
       name:      isCodeOnly ? (bnum||name) : cleanName,
       bnum:      code4 || bnum || '',
       ptype, packSize,
+      packQty:   _packQty || 0,
+      sizeML:    _sizeML  || 0,
       unitRate:  unitRate||0,
+      btlRate:   unitRate||0,
       opening:   0,
       purchased: bottlesDel,
       closing:   0
@@ -2893,20 +2901,28 @@ function renderBillTally(){
 
   const tallied = bills.map(b=>{
     const items = (b.items||[]).map(it=>{
-      const cases=it.casesDel||0, extraBtls=it.btlsDel||0;
-      const packQty=parseInt((it.packSize||'12').split('/')[0])||12;
-      const totalBtl=cases*packQty+extraBtls;
-      const bn=String(it.brandNum||it.bnum||'').replace(/^0+/,'');
-      const sml=parseInt((it.packSize||'').replace(/.*\//,'').trim())||0;
-      const pd=getPriceData(bn,sml);
-      const cessKey=`${b.id}_${bn}_${sml}`;
-      const cess=getTallyCess(cessKey, globalCess);
-      const issueAmt=pd?cases*pd[0]:((it.btlRate||it.unitRate)?cases*(it.btlRate||it.unitRate)*packQty:0);
-      const marginAmt=pd?totalBtl*pd[1]:0;
-      const cessAmt=cess*totalBtl;
-      return {it,bn,sml,packQty,totalBtl,cessKey,cess,issueAmt,marginAmt,cessAmt,
-        lineTotal:issueAmt+marginAmt+cessAmt,
-        issuePerCase:pd?pd[0]:0, marginPerBtl:pd?pd[1]:0, mrp:pd?pd[2]:0, hasPd:!!pd};
+      const cases    = it.casesDel||0;
+      const extraBtls= it.btlsDel||0;
+      // Use stored packQty/sizeML if available; fall back to parsing packSize string
+      const packQty  = it.packQty  || parseInt((it.packSize||'12').split('/')[0]) || 12;
+      // Resolve sizeML: stored field → parse from packSize "24/330ml" → 0
+      const _psRaw   = (it.packSize||'');
+      const _psMLStr = _psRaw.includes('/') ? _psRaw.split('/')[1] : _psRaw;
+      const sizeML   = it.sizeML   || parseInt(_psMLStr.replace(/[^0-9]/g,'')) || 0;
+      const totalBtl = cases * packQty + extraBtls;
+      // Brand number: strip leading zeros for price-data lookup key
+      // Strip " (24)" suffix and leading zeros from brand number
+      const _rawBN   = String(it.brandNum||it.bnum||'');
+      const bn       = _rawBN.replace(/\s*\(.*\)/,'').replace(/^0+/,'');
+      const pd       = getPriceData(bn, sizeML);
+      const cessKey  = `${b.id}_${bn}_${sizeML}`;
+      const cess     = getTallyCess(cessKey, globalCess);
+      const issueAmt = pd ? cases*pd[0] : 0;
+      const marginAmt= pd ? totalBtl*pd[1] : 0;
+      const cessAmt  = cess * totalBtl;
+      return {it, bn, sml:sizeML, packQty, totalBtl, cessKey, cess, issueAmt, marginAmt, cessAmt,
+        lineTotal: issueAmt + marginAmt + cessAmt,
+        issuePerCase: pd?pd[0]:0, marginPerBtl: pd?pd[1]:0, mrp: pd?pd[2]:0, hasPd: !!pd};
     });
     const calcTotal=items.reduce((s,r)=>s+r.lineTotal,0);
     const actual=b.netInvoice||0;
@@ -2948,7 +2964,8 @@ function renderBillTally(){
           <table style="width:100%;font-size:.68rem;border-collapse:collapse;min-width:700px">
             <thead><tr style="background:var(--s2);border-bottom:1px solid var(--border)">
               <th style="padding:5px 8px;text-align:left">Brand</th>
-              <th style="padding:5px 4px;text-align:center">Pack</th>
+              <th style="padding:5px 4px;text-align:center">Qty</th>
+              <th style="padding:5px 4px;text-align:center">Size</th>
               <th style="padding:5px 4px;text-align:right">Cases</th>
               <th style="padding:5px 4px;text-align:right">+Btls</th>
               <th style="padding:5px 4px;text-align:right">Total Btls</th>
@@ -2965,7 +2982,7 @@ function renderBillTally(){
                 <tr style="border-bottom:1px solid var(--border)">
                   <td style="padding:5px 8px;font-weight:600;max-width:130px;word-break:break-word">
                     ${esc(cleanBrandName(r.it.brandName||r.it.bnum,r.it.brandNum||r.it.bnum))}
-                    ${!r.hasPd?`<span style="color:var(--red);font-size:.58rem"> ⚠</span>`:''}
+                    ${!r.hasPd?`<span style="color:var(--red);font-size:.58rem" title="No price data for bn:${r.bn} size:${r.sml}ml"> ⚠ [${r.bn}/${r.sml}ml]</span>`:''}
                   </td>
                   <td style="padding:5px 4px;text-align:center;color:var(--t3)">${r.it.packQty||''}</td>
                   <td style="padding:5px 4px;text-align:center;color:var(--t3)">${r.it.sizeML?r.it.sizeML+'ml':(r.it.packSize||'—')}</td>
@@ -2987,18 +3004,18 @@ function renderBillTally(){
                   <td style="padding:5px 4px;text-align:right;font-weight:700">${fmtR(r.lineTotal)}</td>
                 </tr>`).join('')}
               <tr style="background:var(--s3);font-weight:700;border-top:2px solid var(--border)">
-                <td colspan="8" style="padding:5px 8px;text-align:right;font-size:.7rem">BILL TOTAL →</td>
+                <td colspan="9" style="padding:5px 8px;text-align:right;font-size:.7rem">BILL TOTAL →</td>
                 <td style="padding:5px 4px;text-align:right">${fmtR(items.reduce((s,r)=>s+r.issueAmt,0))}</td>
                 <td style="padding:5px 4px;text-align:right">${fmtR(items.reduce((s,r)=>s+r.marginAmt,0))}</td>
                 <td style="padding:5px 4px;text-align:right;color:var(--gold2)">${fmtR(items.reduce((s,r)=>s+r.cessAmt,0))}</td>
                 <td style="padding:5px 4px;text-align:right;font-size:.78rem">${fmtR(calcTotal)}</td>
               </tr>
               <tr style="background:${matched?'rgba(39,174,96,.06)':'rgba(192,57,43,.06)'}">
-                <td colspan="11" style="padding:5px 8px;text-align:right;font-size:.7rem;font-weight:600">Actual Net Invoice (PDF):</td>
+                <td colspan="12" style="padding:5px 8px;text-align:right;font-size:.7rem;font-weight:600">Actual Net Invoice (PDF):</td>
                 <td style="padding:5px 4px;text-align:right;font-weight:700;color:var(--gold2)">${fmtR(actual)}</td>
               </tr>
               <tr style="background:${matched?'rgba(39,174,96,.06)':'rgba(192,57,43,.06)'}">
-                <td colspan="11" style="padding:5px 8px;text-align:right;font-size:.7rem;font-weight:600">Difference:</td>
+                <td colspan="12" style="padding:5px 8px;text-align:right;font-size:.7rem;font-weight:600">Difference:</td>
                 <td style="padding:5px 4px;text-align:right;font-weight:700;font-size:.82rem;color:${matched?'var(--green)':Math.abs(diff)>100?'var(--red)':'#e67e22'}">
                   ${matched?'✅ Match':(diff>0?'+':'')+fmtR(diff)}
                 </td>
@@ -5438,8 +5455,8 @@ function renderMRPTable(){
   tbody.innerHTML = items.map(s=>{
     const displayName = cleanBrandName(s.name, s.bnum);
     const brandCode   = s.bnum || extractCodeFromName(s.name) || '';
-    const sizeML      = parseInt((s.packSize||'').split('/').pop()) || 0;
-    const packQty     = parseInt((s.packSize||'12').split('/')[0]) || 12;
+    const sizeML      = s.sizeML  || parseInt((s.packSize||'').split('/').pop()?.replace(/ml/i,'')) || 0;
+    const packQty     = s.packQty || parseInt((s.packSize||'12').split('/')[0]) || 12;
     const missingMrp  = !(s.btlRate||s.unitRate) || (s.btlRate||s.unitRate)<=0;
     const missingIss  = !s.issuePrice || s.issuePrice<=0;
 
@@ -5634,7 +5651,7 @@ function renderTodayClosing(){
   tbody.innerHTML = sorted.map(s=>{
     const name    = cleanBrandName(s.name, s.bnum);
     const balance = (s.opening||0) + (s.purchased||0);
-    const packQty = parseInt((s.packSize||'').split('/')[0]) || 1;
+    const packQty = s.packQty || parseInt((s.packSize||'').split('/')[0]) || 1;
     const clCases = s.todayCloseCases != null ? s.todayCloseCases : '';
     const clBtls  = s.todayCloseBtls  != null ? s.todayCloseBtls  : '';
     const totalCloseBtls = ((parseFloat(clCases)||0)*packQty) + (parseFloat(clBtls)||0);
@@ -5675,7 +5692,7 @@ function renderTodayClosing(){
 function updateTodayRow(id){
   const stock = getStock();
   const s = stock[id]; if(!s) return;
-  const packQty = parseInt((s.packSize||'').split('/')[0]) || 1;
+  const packQty = s.packQty || parseInt((s.packSize||'').split('/')[0]) || 1;
   const balance = (s.opening||0) + (s.purchased||0);
   const cases = parseFloat(document.getElementById(`tc-cases-${id}`)?.value)||0;
   const btls  = parseFloat(document.getElementById(`tc-btls-${id}`)?.value)||0;
@@ -5717,7 +5734,7 @@ function saveTodayClosing(){
   const allItems = Object.values(stock);
   let totalSaleVal = 0;
   allItems.forEach(s=>{
-    const packQty = parseInt((s.packSize||'').split('/')[0]) || 1;
+    const packQty = s.packQty || parseInt((s.packSize||'').split('/')[0]) || 1;
     const balance = (s.opening||0) + (s.purchased||0);
     const casesEl = document.getElementById(`tc-cases-${s.id}`);
     const btlsEl  = document.getElementById(`tc-btls-${s.id}`);
@@ -5841,12 +5858,17 @@ function getPriceData(brandNum, sizeML) {
     k.startsWith(bn+'_') || k.startsWith(brandNum+'_')
   );
   if(!entries.length) return null;
-  if(!sizeML || sizeML===0) return entries[0][1]; // return first match
+  // If sizeML not given, try to parse from packSize string "N/Nml"
+  let sz = sizeML;
+  if((!sz || sz===0) && !sizeML){
+    // last resort: return first entry
+  }
+  if(!sz || sz===0) return entries[0][1];
   // Match by size
-  const exact = entries.find(([,v])=> v[4]===sizeML);
+  const exact = entries.find(([,v])=> v[4]===sz);
   if(exact) return exact[1];
-  // Fuzzy match within 10ml
-  const close = entries.find(([,v])=> Math.abs(v[4]-sizeML)<=10);
+  // Fuzzy match within 15ml
+  const close = entries.find(([,v])=> Math.abs(v[4]-sz)<=15);
   return close ? close[1] : entries[0][1];
 }
 
@@ -5857,7 +5879,7 @@ function autoPopulatePrices() {
   Object.keys(stock).forEach(id => {
     const s = stock[id];
     const bn = String(s.bnum||'').replace(/^0+/,'');
-    const sizeML = parseInt((s.packSize||'').replace(/.*\//,'').trim()) || 0;
+    const sizeML = s.sizeML || parseInt((s.packSize||'').replace(/.*\//,'').replace(/ml/i,'').trim()) || 0;
     const pd = getPriceData(bn, sizeML);
     if(!pd) return;
     let changed = false;
