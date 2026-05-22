@@ -343,6 +343,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
       <button class="btn btn-gold" onclick="saveGdrivePdfFolder()">💾 Save</button>
       <button class="btn btn-out" onclick="fetchGdrivePDFs(false)">📥 Fetch New Bills</button>
       <button class="btn btn-out" onclick="fetchGdrivePDFs(true)">🔄 Re-fetch All Bills</button>
+      <button class="btn btn-out" onclick="clearFetchedFileIds();toast('File cache cleared — next Fetch New Bills will re-check all files')" style="color:var(--t3);font-size:.72rem">🗑 Clear Skip Cache</button>
     </div>
     <div id="gdrive-pdf-status" style="margin-top:8px;font-size:.75rem"></div>
     <div class="alert alert-info" style="margin-top:10px;font-size:.72rem">
@@ -4967,6 +4968,25 @@ function saveGdrivePdfFolder(){
 function getLastFetchTime(){ return localStorage.getItem('lm_last_drive_fetch') || ''; }
 function setLastFetchTime(){ localStorage.setItem('lm_last_drive_fetch', new Date().toISOString()); }
 
+// Persistent set of Google Drive file IDs already successfully processed.
+// Keyed by file ID (permanent & unique per Drive file) so renames/re-uploads
+// of the same file are still recognised as already-done.
+function getFetchedFileIds(){
+  try{ return new Set(JSON.parse(localStorage.getItem('lm_fetched_file_ids')||'[]')); }
+  catch{ return new Set(); }
+}
+function addFetchedFileId(id){
+  const s = getFetchedFileIds();
+  s.add(id);
+  // Keep the list bounded — drop the oldest half if >2000 entries
+  const arr = [...s];
+  const trimmed = arr.length > 2000 ? arr.slice(arr.length - 1000) : arr;
+  localStorage.setItem('lm_fetched_file_ids', JSON.stringify(trimmed));
+}
+function clearFetchedFileIds(){
+  localStorage.removeItem('lm_fetched_file_ids');
+}
+
 // Auto-check for new Drive files every 30 minutes when app is open
 let driveAutoCheckTimer = null;
 function startDriveAutoCheck(){
@@ -5042,17 +5062,24 @@ async function fetchGdrivePDFs(refetchAll){
       const bigFiles = allFiles.filter(f=>f.tooBig);
       if(bigFiles.length && st) st.innerHTML += `<div style="color:var(--t3);font-size:.72rem">⚠️ Skipping ${bigFiles.length} oversized file(s) >10MB</div>`;
     } else {
-      const lastFetch = getLastFetchTime();
+      // Skip files we've already successfully processed — check by:
+      // 1. Drive file ID (most reliable — permanent, survives renames)
+      // 2. ICDC number extracted from filename (fallback for renamed files)
+      const fetchedIds = getFetchedFileIds();
       toProcess = allFiles.filter(f=>{
         if(f.tooBig) return false;
+        // Already processed this exact Drive file?
+        if(fetchedIds.has(f.id)) return false;
+        // ICDC in filename already saved?
         const icdc = (f.name||'').match(/ICDC\d{10,}/i)?.[0]?.toUpperCase();
-        const isNewByTime = lastFetch ? f.modifiedTime > lastFetch : true;
-        const isNewByICDC = !icdc || !savedICDCs.has(icdc);
-        return isNewByICDC || isNewByTime;
+        if(icdc && savedICDCs.has(icdc)) return false;
+        return true;
       }).sort((a,b)=>a.name.localeCompare(b.name));
 
       if(!toProcess.length){
-        if(st) st.innerHTML=`<span style="color:var(--green)">✅ All ${allFiles.length} PDFs already uploaded — nothing new since ${fmtDate(getLastFetchTime().slice(0,10))}</span>`;
+        const lastFetch = getLastFetchTime();
+        const since = lastFetch ? ` since ${fmtDate(lastFetch.slice(0,10))}` : '';
+        if(st) st.innerHTML=`<span style="color:var(--green)">✅ All ${allFiles.length} PDFs already processed — nothing new${since}</span>`;
         checkMissingFinancials();
         return;
       }
@@ -5161,6 +5188,8 @@ async function fetchGdrivePDFs(refetchAll){
           skipped++;
         }
         CS = prevCS;
+        // Remember this file ID so it's skipped on future fetches
+        if(!refetchAll) addFetchedFileId(f.id);
 
         // Free memory — longer pause every 10 files for iOS GC
         const pauseMs = (i > 0 && i % 10 === 0) ? 1000 : 150;
@@ -5186,9 +5215,10 @@ async function fetchGdrivePDFs(refetchAll){
     // Start auto-check now that folder is configured
     startDriveAutoCheck();
 
+    const cachedCount = getFetchedFileIds().size;
     const summary = refetchAll
       ? `✅ Done: ${updated} updated, ${saved} new, ${skipped} skipped, ${failed} errors`
-      : `✅ Done: ${saved} new bills saved, ${skipped} already existed, ${failed} errors`;
+      : `✅ Done: ${saved} new bills saved, ${skipped} already existed, ${failed} errors · ${cachedCount} files cached`;
 
     if(st) st.innerHTML=`<span style="color:var(--green)">${summary}</span>`;
     toast(summary);
