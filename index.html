@@ -1683,7 +1683,7 @@ async function saveAllReady(){
       profTax:      r.bill.profTax      || 0,
       amtCredited:  r.bill.amtCredited  || 0,
       eChallanRef:  r.bill.eChallanRef  || '',
-      creditBalance:r.bill.creditBalance|| 0,
+      creditBalance:r.bill.creditBalance|| r.bill.amtCredited || 0,
       totalCases:   r.bill.totalCases   || 0,
       totalBtls:    r.bill.totalBtls    || 0,
     });
@@ -5149,7 +5149,7 @@ async function fetchGdrivePDFs(refetchAll){
             invoiceValue: parsed.invoiceValue||0, mrpRounding: parsed.mrpRounding||0,
             exciseCess: parsed.exciseCess||0, tcs: parsed.tcs||0,
             profTax: parsed.profTax||0, amtCredited: parsed.amtCredited||0,
-            eChallanRef: parsed.eChallanRef||'', creditBalance: parsed.creditBalance||0,
+            eChallanRef: parsed.eChallanRef||'', creditBalance: parsed.creditBalance||parsed.amtCredited||0,
             storeNum: targetStore
           };
           bills.push(newBill);
@@ -5239,7 +5239,7 @@ async function reprocessPDFs(files, st){
           profTax:       parsed.profTax       || existing.profTax       || 0,
           amtCredited:   parsed.amtCredited   || existing.amtCredited   || 0,
           eChallanRef:   parsed.eChallanRef   || existing.eChallanRef   || '',
-          creditBalance: parsed.creditBalance || existing.creditBalance || 0,
+          creditBalance: parsed.creditBalance || existing.creditBalance || parsed.amtCredited || existing.amtCredited || 0,
           totalCases:   parsed.totalCases   || existing.totalCases   || 0,
           totalBtls:    parsed.totalBtls    || existing.totalBtls    || 0,
         };
@@ -5265,7 +5265,7 @@ async function reprocessPDFs(files, st){
           profTax:       parsed.profTax       || 0,
           amtCredited:   parsed.amtCredited   || 0,
           eChallanRef:   parsed.eChallanRef   || '',
-          creditBalance: parsed.creditBalance || 0,
+          creditBalance: parsed.creditBalance || parsed.amtCredited || 0,
           totalCases: parsed.totalCases || 0,
           totalBtls: parsed.totalBtls || 0,
           storeNum
@@ -5305,14 +5305,32 @@ function checkMissingFinancials(){
     });
   });
 
-  // Bills missing e-challan (should be > 0 for almost all bills)
-  const missingChallan = allBills.filter(b => !(b.eChallan > 0) && b.icdc && b.netInvoice > 0);
-  // Bills missing credit balance
-  const missingCredit  = allBills.filter(b => !(b.amtCredited > 0) && b.icdc && b.netInvoice > 0);
+  // A bill truly has missing financial data when it has a netInvoice but
+  // NONE of the key financial fields were extracted:
+  //   - exciseCess: present on virtually every bill
+  //   - creditBalance or amtCredited: the closing balance
+  //   - netInvoice itself is 0 despite having items
+  // We do NOT flag missing eChallan alone — some bills are cash (eChallan=0).
+  // We check BOTH creditBalance (new parser) and amtCredited (old parser).
+  const problemBills = allBills.filter(b => {
+    if(!b.icdc || !b.netInvoice) return false;           // no ICDC or no amount → skip
+    const hasCess    = (b.exciseCess   || 0) > 0;
+    const hasCredit  = (b.creditBalance|| 0) > 0 || (b.amtCredited || 0) > 0;
+    const hasChallan = (b.eChallan     || 0) > 0;
+    // Flag only if we're clearly missing most financial data
+    // (cess is on every bill, so missing cess = definitely old parse)
+    return !hasCess && !hasCredit;
+  });
 
-  const problemBills = [...new Set([...missingChallan, ...missingCredit].map(b=>b.icdc))];
+  // Dedupe by ICDC
+  const seen = new Set();
+  const uniqueProblemBills = problemBills.filter(b => {
+    if(seen.has(b.icdc)) return false;
+    seen.add(b.icdc);
+    return true;
+  });
 
-  if(!problemBills.length){
+  if(!uniqueProblemBills.length){
     card.style.display = 'none';
     return;
   }
@@ -5320,12 +5338,17 @@ function checkMissingFinancials(){
   card.style.display = 'block';
   content.innerHTML = `
     <div style="font-size:.78rem;color:var(--t2);margin-bottom:10px">
-      <strong>${problemBills.length} bill${problemBills.length>1?'s':''}</strong> are missing e-challan or credit balance data
-      (extracted before the improved parser). Re-fetching from Google Drive will fix them.
+      <strong>${uniqueProblemBills.length} bill${uniqueProblemBills.length>1?'s':''}</strong>
+      are missing financial data (Excise Cess + Credit Balance not extracted).
+      Re-fetching from Google Drive will fix them.
     </div>
     <div style="font-size:.72rem;color:var(--t3);margin-bottom:10px;max-height:120px;overflow-y:auto">
-      ${problemBills.slice(0,20).map(icdc=>`<div style="padding:2px 0;border-bottom:1px solid var(--border)">${icdc}</div>`).join('')}
-      ${problemBills.length>20?`<div style="color:var(--t3)">… and ${problemBills.length-20} more</div>`:''}
+      ${uniqueProblemBills.slice(0,20).map(b=>`
+        <div style="padding:3px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between">
+          <span>${b.icdc}</span>
+          <span style="color:var(--t4);font-size:.68rem">${b.date||''}</span>
+        </div>`).join('')}
+      ${uniqueProblemBills.length>20?`<div style="color:var(--t3);padding-top:4px">… and ${uniqueProblemBills.length-20} more</div>`:''}
     </div>
     <button class="btn btn-gold btn-sm" onclick="fetchGdrivePDFs(true)">🔄 Re-fetch All from Google Drive to Fix</button>
   `;
