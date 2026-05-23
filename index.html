@@ -794,14 +794,22 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
     <div class="card-hd">🔥 Firebase Sync</div>
     <div class="alert alert-info" style="margin-bottom:10px;font-size:.75rem">
       Uses <strong>Firebase Realtime Database</strong> — free, fast, no limits.<br>
-      Paste your Firebase Database URL below (e.g. <code style="font-size:.68rem">https://your-project.firebaseio.com</code>)
+      Paste your Firebase Database URL below. If you get <strong>HTTP 401</strong>, add a Database Secret or open your database rules.
     </div>
     <div class="fg" style="margin-bottom:8px">
       <label class="fl">Firebase Database URL</label>
       <input class="fc" type="url" id="sync-url-input" placeholder="https://your-project-default-rtdb.firebaseio.com" style="font-size:.72rem">
     </div>
+    <div class="fg" style="margin-bottom:8px">
+      <label class="fl">Database Secret (for HTTP 401 fix)</label>
+      <input class="fc" type="password" id="sync-secret-input" placeholder="Paste your Database Secret here" style="font-size:.72rem">
+      <div style="font-size:.68rem;color:var(--t3);margin-top:3px">
+        Firebase Console → Project Settings → Service Accounts → Database Secrets → Add Secret.
+        Or set Rules to <code style='font-size:.65rem'>".read":true,".write":true</code> for open access (less secure).
+      </div>
+    </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn btn-gold" onclick="saveSyncUrl()">💾 Save URL</button>
+      <button class="btn btn-gold" onclick="saveSyncUrl()">💾 Save</button>
       <button class="btn btn-out" onclick="testSyncConnection()">🔌 Test Connection</button>
       <button class="btn btn-out" onclick="pushToCloud()">⬆️ Push All Data Now</button>
       <button class="btn btn-out" onclick="pullFromCloud()">⬇️ Pull All Data Now</button>
@@ -1010,16 +1018,25 @@ const DEFAULT_FIREBASE_URL = 'https://wines-manager-default-rtdb.firebaseio.com'
 let FIREBASE_URL = localStorage.getItem('lm_firebase_url') || DEFAULT_FIREBASE_URL;
 
 function getSyncUrl(){ return window._overrideSyncUrl || localStorage.getItem('lm_firebase_url') || DEFAULT_FIREBASE_URL; }
+function getSyncSecret(){ return localStorage.getItem('lm_firebase_secret') || ''; }
+function fbAuthParam(){ const s = getSyncSecret(); return s ? `?auth=${encodeURIComponent(s)}` : ''; }
 
 function saveSyncUrl(){
-  const url = document.getElementById('sync-url-input')?.value.trim();
+  const url    = document.getElementById('sync-url-input')?.value.trim();
+  const secInp = document.getElementById('sync-secret-input');
   if(!url){ toast('Enter the Firebase Database URL'); return; }
-  // Strip trailing slash
   const clean = url.replace(/\/+$/, '');
   localStorage.setItem('lm_firebase_url', clean);
   FIREBASE_URL = clean;
   window._overrideSyncUrl = clean;
-  toast('✅ URL saved — testing…');
+  // Save secret if provided and not the masked placeholder
+  const secret = secInp?.value?.trim() || '';
+  if(secret && secret !== '••••••••'){
+    localStorage.setItem('lm_firebase_secret', secret);
+  } else if(!secret){
+    localStorage.removeItem('lm_firebase_secret');
+  }
+  toast('✅ Saved — testing connection…');
   testSyncConnection();
 }
 
@@ -1027,20 +1044,20 @@ function saveSyncUrl(){
 async function fbGet(path){
   const url = getSyncUrl();
   if(!url) throw new Error('No Firebase URL set');
-  const r = await fetch(`${url}/${path}.json`, {method:'GET'});
-  if(!r.ok) throw new Error('HTTP '+r.status);
+  const r = await fetch(`${url}/${path}.json${fbAuthParam()}`, {method:'GET'});
+  if(!r.ok) throw new Error('HTTP '+r.status+(r.status===401?' — add a Database Secret in Settings':''));
   return r.json();
 }
 
 async function fbPut(path, data){
   const url = getSyncUrl();
   if(!url) throw new Error('No Firebase URL set');
-  const r = await fetch(`${url}/${path}.json`, {
+  const r = await fetch(`${url}/${path}.json${fbAuthParam()}`, {
     method:'PUT',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify(data)
   });
-  if(!r.ok) throw new Error('HTTP '+r.status);
+  if(!r.ok) throw new Error('HTTP '+r.status+(r.status===401?' — add a Database Secret in Settings':''));
   return r.json();
 }
 
@@ -2400,32 +2417,52 @@ function parseICDCHeader(text, rawText){
   // Sub Total
   bill.subTotal    = money(/[Ss]ub\s*[Tt]otal[:\s]*([\d,]+\.?\d*)/);
 
-  // Invoice Value (BASE) — on the TIN NO / Particulars line, NOT the "Less this" line
-  const ivBaseM = text.match(/(?:TIN\s*NO|Particulars|IMFL\/FL|Beer\s+Total)[^\n]*Invoice\s*Value[:\s]*([\d,]+\.?\d*)/i);
-  if(ivBaseM){
-    bill.invoiceValue = parseFloat(ivBaseM[1].replace(/,/g,''));
-  } else {
-    const allIV = [...text.matchAll(/Invoice\s+Value[:\s]*([\d,]+\.?\d*)/gi)];
-    const plain = allIV.find(m => !text.slice(Math.max(0,m.index-20),m.index).match(/Less\s+this/i));
-    if(plain) bill.invoiceValue = parseFloat(plain[1].replace(/,/g,''));
-  }
+  // ── Invoice Value / MRP Rounding / Net Invoice ─────────────────────────────
+  // These three values appear together in the bill footer.
+  // Format varies: values may appear right after each label (single-page bills)
+  // OR all three labels appear first, then all three values (multi-page compressed bills).
+  // Strategy: find the "Invoice Value … Net Invoice Value" block, extract up to 3 money
+  // amounts in order → invoiceValue, mrpRounding, netInvoice.
+  (function(){
+    // Find the footer block starting from "Invoice Value" through to a known terminator
+    const footerM = text.match(/Invoice[\s\n]+Value[\s\S]*?(?=Amount\s+in\s+words|e-challan|Authorized|$)/i);
+    if(footerM){
+      const block = footerM[0];
+      // Extract all amounts ≥ 1000 (avoids stray small numbers like quantity counts)
+      const amts = [...block.matchAll(/(?<![\d])(\d{1,3}(?:,\d{2,3})*\.\d{2})(?![\d])/g)]
+        .map(m => parseFloat(m[1].replace(/,/g,'')))
+        .filter(v => v >= 100);
+      if(amts.length >= 3){
+        bill.invoiceValue = amts[0];
+        bill.mrpRounding  = amts[1];
+        bill.netInvoice   = amts[2];
+      } else if(amts.length === 2){
+        bill.invoiceValue = amts[0];
+        bill.netInvoice   = amts[1];
+        bill.mrpRounding  = Math.round((amts[1] - amts[0]) * 100) / 100;
+      } else if(amts.length === 1){
+        bill.netInvoice   = amts[0];
+        bill.invoiceValue = amts[0];
+      }
+    }
 
-  // Net Invoice = "(-)Less this Invoice Value: X"
-  const ivLess = text.match(/Less\s+this\s+Invoice\s+Value[:\s]*([\d,]+\.?\d*)/i);
-  bill.netInvoice = ivLess ? parseFloat(ivLess[1].replace(/,/g,'')) : 0;
-
-  // MRP Rounding
-  if(bill.netInvoice > 0 && bill.invoiceValue > 0){
-    bill.mrpRounding = Math.round((bill.netInvoice - bill.invoiceValue) * 100) / 100;
-  } else {
-    bill.mrpRounding = money(/[Mm][Rr][Pp]\s*[Rr]ounding[^:]*[:\s]*([\d,]+\.?\d*)/);
-  }
-
-  if(!bill.netInvoice){
-    const nivm = text.match(/[Nn]et\s+[Ii]nvoice\s+[Vv]alue[:\s]*([\d,]+\.?\d*)/s);
-    if(nivm) bill.netInvoice = parseFloat((nivm[1]||'0').replace(/,/g,''));
-  }
-  if(!bill.netInvoice && bill.invoiceValue) bill.netInvoice = bill.invoiceValue;
+    // Fallback: try "(-)Less this Invoice Value" for net invoice
+    if(!bill.netInvoice){
+      const m = text.match(/Less\s+this\s+Invoice\s+Value[:\s]*([\d,]+\.?\d*)/i);
+      if(m) bill.netInvoice = parseFloat(m[1].replace(/,/g,''));
+    }
+    // Fallback: explicit "Net Invoice Value: X"
+    if(!bill.netInvoice){
+      const m = text.match(/Net\s+Invoice\s+Value[\s\S]{0,20}?([\d,]{5,}[\d]+\.\d{2})/i);
+      if(m) bill.netInvoice = parseFloat(m[1].replace(/,/g,''));
+    }
+    // Fallback: derive mrpRounding from difference
+    if(!bill.mrpRounding && bill.netInvoice > 0 && bill.invoiceValue > 0){
+      bill.mrpRounding = Math.round((bill.netInvoice - bill.invoiceValue) * 100) / 100;
+    }
+    // Last resort: net = invoice
+    if(!bill.netInvoice && bill.invoiceValue) bill.netInvoice = bill.invoiceValue;
+  })();
 
   // Special Excise Cess
   bill.exciseCess  = money(/[Ss]pecial\s*[Ee]xcise\s*[Cc]ess[:\s]*([\d,]+\.?\d*)/);
@@ -4518,9 +4555,11 @@ function renderSettings(){
   cb.checked = on;
   toggleAutoBackup(cb);
 
-  // Populate sync URL
+  // Populate sync URL and secret
   const inp = document.getElementById('sync-url-input');
   if(inp) inp.value = getSyncUrl();
+  const secEl = document.getElementById('sync-secret-input');
+  if(secEl) secEl.value = getSyncSecret() ? '••••••••' : '';
 
 
   // Store management list
