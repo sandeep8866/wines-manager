@@ -376,33 +376,6 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <!-- bill queue — rendered dynamically by renderBillQueue() -->
   <div id="extprev" style="display:none"></div>
 
-  <!-- ── BILL TALLY CHECKER ── -->
-  <div class="card" style="margin-bottom:10px;border:1px solid rgba(181,114,10,.3)">
-    <div class="card-hd">🧮 Bill Amount Tally Checker</div>
-    <div style="font-size:.78rem;color:var(--t2);margin-bottom:10px">
-      Enter <strong>Special Excise Cess per bottle</strong> to verify each bill's amount.<br>
-      Formula: <span style="font-family:monospace;font-size:.72rem;color:var(--gold2)">Net Invoice = Issue Price (cases) + Special Margin + Excise Cess × bottles</span>
-    </div>
-    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
-      <div class="fg" style="min-width:140px;margin:0">
-        <label class="fl" style="font-size:.72rem">Excise Cess / Bottle (₹)</label>
-        <input class="fc" type="number" id="tally-cess-per-bottle" step="0.01" placeholder="e.g. 7.25"
-          style="font-size:.85rem;padding:6px 10px"
-          oninput="renderBillTally()">
-      </div>
-      <div class="fg" style="min-width:140px;margin:0">
-        <label class="fl" style="font-size:.72rem">Filter Bills</label>
-        <select class="fc" id="tally-filter" onchange="renderBillTally()" style="font-size:.78rem;padding:6px">
-          <option value="all">All Bills</option>
-          <option value="mismatch">Mismatches Only</option>
-          <option value="match">Matched Only</option>
-        </select>
-      </div>
-      <button class="btn btn-gold btn-sm" onclick="renderBillTally()">🔄 Check Tally</button>
-    </div>
-    <div id="bill-tally-result"></div>
-  </div>
-
   <!-- history -->
   <div class="sh" style="margin-top:4px"><h3>History</h3>
     <select class="fc" style="width:auto;padding:5px 8px;font-size:.75rem" id="pur-filter" onchange="renderPurchaseList()">
@@ -436,6 +409,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
     <button class="pill" id="stk-tab-today" onclick="switchStockTab('today',this)">🌙 Today's Closing</button>
     <button class="pill" id="stk-tab-closing" onclick="switchStockTab('closing',this)">📅 Closing History</button>
     <button class="pill" id="stk-tab-mrp" onclick="switchStockTab('mrp',this)">💰 MRP Price List</button>
+    <button class="pill" id="stk-tab-tally" onclick="switchStockTab('tally',this)">🧮 Bill Tally</button>
   </div>
 
   <!-- ── Current Stock Tab ── -->
@@ -510,6 +484,46 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
           </tr></thead>
           <tbody id="mrp-tbody"></tbody>
         </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Bill Tally Tab ── -->
+  <div id="stk-panel-tally" style="display:none">
+    <div class="card" style="margin-top:10px;border:1px solid rgba(181,114,10,.3)">
+      <div class="card-hd">🧮 Bill Amount Tally Checker</div>
+      <div style="font-size:.78rem;color:var(--t2);margin-bottom:10px">
+        Enter <strong>Special Excise Cess per bottle</strong> to verify each bill's amount.
+        Cess rates are saved per brand+size and auto-fill on future bills.<br>
+        <span style="font-family:monospace;font-size:.72rem;color:var(--gold2)">Net Invoice = Issue Price (cases) + Special Margin + Excise Cess × bottles</span>
+      </div>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+        <div class="fg" style="min-width:140px;margin:0">
+          <label class="fl" style="font-size:.72rem">Default Cess / Bottle (₹)</label>
+          <input class="fc" type="number" id="tally-cess-per-bottle" step="0.01" placeholder="e.g. 7.25"
+            style="font-size:.85rem;padding:6px 10px"
+            oninput="renderBillTally()">
+        </div>
+        <div class="fg" style="min-width:140px;margin:0">
+          <label class="fl" style="font-size:.72rem">Filter Bills</label>
+          <select class="fc" id="tally-filter" onchange="renderBillTally()" style="font-size:.78rem;padding:6px">
+            <option value="all">All Bills</option>
+            <option value="mismatch">Mismatches Only</option>
+            <option value="match">Matched Only</option>
+          </select>
+        </div>
+        <button class="btn btn-gold btn-sm" onclick="renderBillTally()">🔄 Check Tally</button>
+      </div>
+      <div id="bill-tally-result"></div>
+      <div style="margin-top:12px;padding:10px 12px;background:var(--s2);border-radius:8px;border:1px solid var(--border);font-size:.72rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+          <span style="font-weight:600;color:var(--t2)">💾 Saved Cess Rates (auto-fill)</span>
+          <button class="btn btn-xs btn-out" style="color:var(--red);font-size:.65rem"
+            onclick="if(confirm('Clear all saved cess rates?')){Object.keys(tallycessMap).forEach(k=>delete tallycessMap[k]);localStorage.removeItem('lm_tally_cess');renderBillTally();}">
+            🗑 Clear All
+          </button>
+        </div>
+        <div id="cess-map-summary" style="color:var(--t3);font-size:.68rem;word-break:break-all"></div>
       </div>
     </div>
   </div>
@@ -1357,7 +1371,7 @@ function nav(p){
   const idx = {dash:0,purchases:1,stock:2,payments:3,reports:4,settings:5}[p];
   document.querySelectorAll('.nb')[idx].classList.add('active');
   if(p==='stock'){ renderStockTable(); document.getElementById('clog-date').value=today(); }
-  if(p==='purchases'){ renderPurchaseList(); setTimeout(checkDataIntegrity, 200); setTimeout(checkMissingFinancials, 400); setTimeout(renderBillTally, 600); }
+  if(p==='purchases'){ renderPurchaseList(); setTimeout(checkDataIntegrity, 200); setTimeout(checkMissingFinancials, 400); }
   if(p==='payments'){renderPayPage();}
   if(p==='dash'){renderDash();}
   if(p==='settings'){renderSettings();}
@@ -2917,13 +2931,24 @@ function updatePurchaseFilter(){
 //  BILL TALLY CHECKER
 // ══════════════════════════════════════════════
 // Store cess rates per brand: { "billId_bn_sml": cessPerBtl }
+// Cess map keyed by "brandCode_sizeML" — shared across ALL bills for same brand+size
 const tallycessMap = JSON.parse(localStorage.getItem('lm_tally_cess')||'{}');
 function saveTallyCess(key, val){
-  tallycessMap[key] = parseFloat(val)||0;
+  const v = parseFloat(val)||0;
+  if(v > 0) tallycessMap[key] = v;
+  else delete tallycessMap[key];
   localStorage.setItem('lm_tally_cess', JSON.stringify(tallycessMap));
   renderBillTally();
 }
-function getTallyCess(key, def){ return tallycessMap[key]!==undefined ? tallycessMap[key] : def; }
+function getTallyCess(key, def){
+  // key format: "bn_sizeML" (brand code + size in ml)
+  if(tallycessMap[key] !== undefined) return tallycessMap[key];
+  return def;
+}
+function getCessMapSummary(){
+  const entries = Object.entries(tallycessMap);
+  return entries.length ? entries.map(([k,v])=>`${k}: ₹${v}`).join(', ') : 'None saved';
+}
 
 function renderBillTally(){
   const div = document.getElementById('bill-tally-result');
@@ -2953,7 +2978,8 @@ function renderBillTally(){
       const _rawBN   = String(it.brandNum||it.bnum||'');
       const bn       = _rawBN.replace(/\s*\(.*\)/,'').replace(/^0+/,'');
       const pd       = getPriceData(bn, sizeML);
-      const cessKey  = `${b.id}_${bn}_${sizeML}`;
+      // Key by brand+size only so cess auto-fills across bills
+      const cessKey  = `${bn}_${sizeML}`;
       const cess     = getTallyCess(cessKey, globalCess);
       const issueAmt = pd ? cases*pd[0] : 0;
       const marginAmt= pd ? totalBtl*pd[1] : 0;
@@ -3058,12 +3084,41 @@ function renderBillTally(){
                   ${matched?'✅ Match':(diff>0?'+':'')+fmtR(diff)}
                 </td>
               </tr>
+              ${b.mrpRounding?`<tr style="background:var(--s2)">
+                <td colspan="12" style="padding:4px 8px;text-align:right;font-size:.68rem;color:var(--t3)">MRP Rounding (from bill):</td>
+                <td style="padding:4px 4px;text-align:right;font-size:.72rem;color:var(--t3)">${fmtR(b.mrpRounding)}</td>
+              </tr>`:''}
+              ${b.exciseCess?`<tr style="background:var(--s2)">
+                <td colspan="12" style="padding:4px 8px;text-align:right;font-size:.68rem;color:var(--t3)">Special Excise Cess (from bill):</td>
+                <td style="padding:4px 4px;text-align:right;font-size:.72rem;color:var(--gold2)">${fmtR(b.exciseCess)}</td>
+              </tr>`:''}
+              ${b.tcs?`<tr style="background:var(--s2)">
+                <td colspan="12" style="padding:4px 8px;text-align:right;font-size:.68rem;color:var(--t3)">TCS:</td>
+                <td style="padding:4px 4px;text-align:right;font-size:.72rem;color:var(--t3)">${fmtR(b.tcs)}</td>
+              </tr>`:''}
             </tbody>
           </table>
         </div>
       </div>`).join('')}
     ${filtered.length===0?`<div style="color:var(--t3);font-size:.78rem;text-align:center;padding:16px">No bills in this filter</div>`:''}
   `;
+  // Update saved cess summary
+  const cessSumEl = document.getElementById('cess-map-summary');
+  if(cessSumEl){
+    const entries = Object.entries(tallycessMap);
+    if(entries.length){
+      cessSumEl.innerHTML = entries.map(([k,v])=>{
+        const [bn,sml] = k.split('_');
+        return `<span style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--s3);border-radius:4px;border:1px solid var(--border)">
+          <strong>${bn}</strong>/${sml}ml → ₹${v}
+          <span onclick="delete tallycessMap['${k}'];localStorage.setItem('lm_tally_cess',JSON.stringify(tallycessMap));renderBillTally()"
+            style="cursor:pointer;color:var(--red);margin-left:4px;font-size:.65rem">✕</span>
+        </span>`;
+      }).join('');
+    } else {
+      cessSumEl.textContent = 'No cess rates saved yet — enter values in the table above.';
+    }
+  }
 }
 
 
@@ -3082,41 +3137,59 @@ function renderPurchaseList(){
         </div>
         <div style="font-family:'Cormorant Garamond',serif;font-size:1.1rem;color:var(--gold2)">${fmtR(b.netInvoice||0)}</div>
       </div>
-      <div class="tbl-wrap">
-        <table>
-          <thead><tr><th>Brand</th><th>Qty</th><th>Size</th><th>Type</th><th class="num">Cases</th><th class="num">Btls</th><th class="num">Btl Rate</th><th class="num">Total</th></tr></thead>
-          <tbody>${b.items.map(it=>{
-            const isCodeOnly = /^\d{4}\s*\(\d+\)\s*$/.test((it.brandName||'').trim());
-            const displayName = isCodeOnly
-              ? (it.brandName||it.brandNum||'—')
-              : (it.brandName||it.brandNum||'—').replace(/^\d{4}\s*\(\d+\)\s*/,'').trim()||it.brandName;
-            const subCode = it.bnum||it.brandNum||'';
-            return `<tr>
-              <td style="font-size:.75rem">
-                <div style="font-weight:500">${esc(displayName)}</div>
-                ${subCode?`<div style="color:var(--t3);font-size:.65rem">${esc(subCode)}</div>`:''}
-              </td>
-              <td style="font-size:.7rem;color:var(--t2);text-align:center">${it.packQty||it.packSize?.split('/')[0]||''}</td>
-              <td style="font-size:.7rem;color:var(--t2);text-align:center">${it.sizeML?it.sizeML+'ml':(it.packSize?.split('/')[1]||'')}</td>
-              <td><span class="tag ${it.ptype==='Beer'?'tag-beer':it.ptype==='Duty Paid'?'tag-dp':'tag-iml'}">${it.ptype}</span></td>
-              <td class="num">${it.casesDel||0}</td>
-              <td class="num">${it.btlsDel||0}</td>
-              <td class="num" style="font-size:.72rem;color:var(--t3)">${fmtR(it.btlRate||it.unitRate||0)}</td>
-              <td class="num" style="color:var(--gold2)">${fmtR(it.total)}</td>
-            </tr>`;}).join('')}</tbody>
-        </table>
+      <div>
+        <div onclick="const nx=this.nextElementSibling;const open=nx.style.display==='';nx.style.display=open?'none':'';this.querySelector('.pur-tog').textContent=open?'▶':'▼'"
+          style="cursor:pointer;font-size:.72rem;color:var(--gold2);padding:4px 0 8px;display:flex;align-items:center;gap:6px;user-select:none">
+          <span class="pur-tog">▶</span>
+          <span>View / Edit ${b.items.length} line items</span>
+        </div>
+        <div style="display:none">
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr>
+              <th>Brand</th><th>Qty</th><th>Size</th><th>Type</th>
+              <th class="num">Cases</th><th class="num">+Btls</th>
+              <th class="num">Total Btls</th>
+              <th class="num">Btl Rate</th><th class="num">Total</th>
+            </tr></thead>
+            <tbody>${b.items.map(it=>{
+              const isCodeOnly = /^\d{4}\s*\(\d+\)\s*$/.test((it.brandName||'').trim());
+              const displayName = isCodeOnly
+                ? (it.brandName||it.brandNum||'—')
+                : (it.brandName||it.brandNum||'—').replace(/^\d{4}\s*\(\d+\)\s*/,'').trim()||it.brandName;
+              const subCode = it.bnum||it.brandNum||'';
+              const pqty    = it.packQty || parseInt((it.packSize||'').split('/')[0]) || 0;
+              const totalBtl= (it.casesDel||0)*pqty + (it.btlsDel||0);
+              return `<tr>
+                <td style="font-size:.75rem">
+                  <div style="font-weight:500">${esc(displayName)}</div>
+                  ${subCode?`<div style="color:var(--t3);font-size:.65rem">${esc(subCode)}</div>`:''}
+                </td>
+                <td style="font-size:.7rem;color:var(--t2);text-align:center">${it.packQty||it.packSize?.split('/')[0]||''}</td>
+                <td style="font-size:.7rem;color:var(--t2);text-align:center">${it.sizeML?it.sizeML+'ml':(it.packSize?.split('/')[1]||'')}</td>
+                <td><span class="tag ${it.ptype==='Beer'?'tag-beer':it.ptype==='Duty Paid'?'tag-dp':'tag-iml'}">${it.ptype}</span></td>
+                <td class="num">${it.casesDel||0}</td>
+                <td class="num">${it.btlsDel||0}</td>
+                <td class="num" style="font-weight:600">${totalBtl}</td>
+                <td class="num" style="font-size:.72rem;color:var(--t3)">${fmtR(it.btlRate||it.unitRate||0)}</td>
+                <td class="num" style="color:var(--gold2)">${fmtR(it.total)}</td>
+              </tr>`;}).join('')}
+            </tbody>
+          </table>
+        </div>
+        </div>
       </div>
       <div style="margin-top:8px;padding:8px 10px;background:var(--s2);border-radius:7px;border:1px solid var(--border);font-size:.72rem">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px 12px">
           ${b.invoiceValue?`<span style="color:var(--t3)">Invoice Value:</span><span style="text-align:right;font-weight:600">${fmtR(b.invoiceValue)}</span>`:''}
           ${b.mrpRounding?`<span style="color:var(--t3)">MRP Rounding:</span><span style="text-align:right">${fmtR(b.mrpRounding)}</span>`:''}
           <span style="color:var(--t3)">Net Invoice:</span><span style="text-align:right;font-weight:700;color:var(--gold2)">${fmtR(b.netInvoice||0)}</span>
+          ${b.exciseCess?`<span style="color:var(--t3)">Special Excise Cess:</span><span style="text-align:right;color:var(--gold2)">${fmtR(b.exciseCess)}</span>`:''}
+          ${b.tcs?`<span style="color:var(--t3)">TCS:</span><span style="text-align:right">${fmtR(b.tcs)}</span>`:''}
+          ${b.profTax?`<span style="color:var(--t3)">Prof Tax:</span><span style="text-align:right">${fmtR(b.profTax)}</span>`:''}
           ${b.eChallan?`<span style="color:var(--t3)">e-Challan/DD:</span><span style="text-align:right;color:var(--blue)">${fmtR(b.eChallan)}${b.eChallanRef?' <small>('+esc(b.eChallanRef)+')</small>':''}</span>`:''}
           ${b.prevCredit?`<span style="color:var(--t3)">Prev Credit:</span><span style="text-align:right">${fmtR(b.prevCredit)}</span>`:''}
           ${b.subTotal?`<span style="color:var(--t3)">Sub Total:</span><span style="text-align:right">${fmtR(b.subTotal)}</span>`:''}
-          ${b.exciseCess?`<span style="color:var(--t3)">Excise Cess:</span><span style="text-align:right">${fmtR(b.exciseCess)}</span>`:''}
-          ${b.tcs?`<span style="color:var(--t3)">TCS:</span><span style="text-align:right">${fmtR(b.tcs)}</span>`:''}
-          ${b.profTax?`<span style="color:var(--t3)">Prof Tax:</span><span style="text-align:right">${fmtR(b.profTax)}</span>`:''}
           ${b.creditBalance||b.amtCredited?`<span style="color:var(--t3)">Credit Balance:</span><span style="text-align:right;color:var(--green);font-weight:600">${fmtR(b.creditBalance||b.amtCredited||0)}</span>`:''}
         </div>
       </div>
