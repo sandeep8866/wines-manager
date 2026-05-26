@@ -1994,7 +1994,9 @@ async function extractPDF(file){
   // Coordinate extractor only wins if fallback finds nothing.
   const fbItems = parseICDCItemsFallback(allPageLines);
   const coordItems = extractItemRows(rows);
-  bill.items = fbItems.length >= coordItems.length ? fbItems : coordItems;
+  // Always prefer text-fallback parser — it handles all formats correctly.
+  // Coordinate extractor is fallback only (handles legacy single-page PDFs).
+  bill.items = fbItems.length > 0 ? fbItems : coordItems;
 
   // Dedup by brandNum+total
   const seen = new Set();
@@ -2216,9 +2218,23 @@ function parseICDCItemsFallback(lines){
   const items = [];
   const seen  = new Set();
 
-  // Pre-join all lines into one text block, normalising fused "mlN" → "ml N"
-  // and ensuring there's a newline before each serial+brandcode token
-  const fullText = lines.join('\n')
+  // Pre-join continuation lines (no leading serial+code) into the previous line.
+  // This handles brand names that wrap to the next visual row in the PDF.
+  // e.g. ["1 5016 KING FISHER PREMIUM LAGER", "BEER Beer G 24 / 330 ml ..."]
+  //   → "1 5016 KING FISHER PREMIUM LAGER BEER Beer G 24 / 330 ml ..."
+  const ITEM_START = /^\s*(?:\d{1,3}\s+\d{4}|\d{5,7}\s)/;
+  const joinedLines = [];
+  for(const ln of lines){
+    if(ln.trim() === '') continue;
+    // If this line starts a new item row → push as new line
+    if(ITEM_START.test(ln) || joinedLines.length === 0){
+      joinedLines.push(ln);
+    } else {
+      // Continuation: append to previous line with space
+      joinedLines[joinedLines.length - 1] += ' ' + ln.trim();
+    }
+  }
+  const fullText = joinedLines.join('\n')
     .replace(/\bml(\d)/gi, 'ml $1');  // "ml10" → "ml 10"
 
   // ── Master regex: matches ALL variants in one pass ────────────────────────
@@ -2264,8 +2280,10 @@ function parseICDCItemsFallback(lines){
     // ── Brand name: text before the first type keyword ────────────────────────
     const typeIdx = rest.search(/\b(IML|Beer|Duty\s+Paid)\b/i);
     let brandName = (typeIdx > 0 ? rest.slice(0, typeIdx) : rest.slice(0, 60))
-      .replace(/^\d+\s+/, '')
-      .replace(/\(\d+\)\s*$/, '')
+      .replace(/^\d+\s+/, '')           // strip leading serial number
+      .replace(/\(\d+\)\s*$/, '')       // strip trailing (packN)
+      .replace(/\s*[GP]\s*\d.*$/, '')    // strip " G 24 / 330 ml..." if leaked
+      .replace(/\s+\d{1,3}\s*\/\s*\d+\s*ml.*$/i, '') // strip pack size if leaked
       .replace(/[|]/g, ' ')
       .replace(/\s{2,}/g, ' ')
       .trim()
