@@ -3332,7 +3332,8 @@ function renderPurchaseList(){
   if(filter) bills = bills.filter(b=>b.date===filter);
   const div = document.getElementById('pur-list');
   if(!bills.length){ div.innerHTML='<div class="empty"><div class="empty-ic">📭</div>No bills yet</div>'; return; }
-  div.innerHTML = bills.map(b=>`
+  div.innerHTML = bills.map(b=>{
+    return `
     <div class="card" style="margin-bottom:10px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
         <div>
@@ -3398,7 +3399,7 @@ function renderPurchaseList(){
         </div>
       </div>
       <button class="btn btn-xs btn-out" onclick="delBill(${b.id})" style="margin-top:8px;color:var(--red)">🗑 Delete Bill</button>
-    </div>`).join('');
+    </div>`;}).join('');
 }
 
 function delBill(id){
@@ -3786,6 +3787,59 @@ function delTxn(id){
 }
 
 // ══════════════════════════════════════════════
+
+// ── Manual e-Challan patch — edits the existing bill directly ─────────────────
+function showChallanForm(wi){
+  const el = document.getElementById('challan-form-'+wi);
+  if(!el) return;
+  el.style.display = el.style.display==='none' ? 'block' : 'none';
+}
+
+function patchBillChallan(billId, billIcdc, storeId, wi){
+  const g = id => parseFloat(document.getElementById(id+'-'+wi)?.value)||0;
+  const s = id => (document.getElementById(id+'-'+wi)?.value||'').trim();
+
+  const eChallan    = g('ch-echallan');
+  const prevCredit  = g('ch-prev');
+  const eChallanRef = s('ch-ref');
+
+  if(!eChallan && !prevCredit)
+    return toast('Enter e-Challan amount or Prev Credit');
+
+  // Search in the bill's own store first, then all stores as fallback
+  const storesToTry = [storeId, ...getStoreIds().filter(id=>id!==storeId)];
+  let foundStore = null, foundBills = null, bill = null;
+
+  for(const sid of storesToTry){
+    const prevCS = CS; CS = sid;
+    const bs = ga('bills');
+    CS = prevCS;
+    const b = bs.find(b => String(b.id) === String(billId)
+                        || (billIcdc && b.icdc === billIcdc));
+    if(b){ foundStore = sid; foundBills = bs; bill = b; break; }
+  }
+
+  if(!bill) return toast('Bill not found — try re-generating the report');
+
+  if(eChallan)    bill.eChallan    = eChallan;
+  if(prevCredit)  bill.prevCredit  = prevCredit;
+  if(eChallanRef) bill.eChallanRef = eChallanRef;
+
+  // Save back to the correct store
+  const prevCS = CS; CS = foundStore;
+  sa('bills', foundBills);
+  CS = prevCS;
+
+  const el = document.getElementById('challan-form-'+wi);
+  if(el) el.style.display = 'none';
+
+  toast('✅ Bill updated');
+  renderPurchaseList();
+  renderDash();
+  const btn = document.querySelector('#rpt-tabs .pill.active');
+  if(btn) btn.click();
+}
+
 //  MANUAL PURCHASE
 // ══════════════════════════════════════════════
 function addMnRow(){
@@ -4473,6 +4527,7 @@ function rptFinancials(bills, from, to){
   // ── Chain validation: amtCredited[i] should equal prevCredit[i+1] ──────────
   // Group by store so we check chains per store separately
   const warnings = [];
+  window._creditWarnings = warnings; // exposed for manual challan UI
   const byStore = {};
   sorted.forEach(b=>{ const s=b._store||CS; (byStore[s]=byStore[s]||[]).push(b); });
   Object.entries(byStore).forEach(([storeId, sBills])=>{
@@ -4496,12 +4551,15 @@ function rptFinancials(bills, from, to){
       // Only flag if credited > 0 and difference is significant (> ₹10 to avoid rounding noise)
       if(credited>0 && Math.abs(credited-nextPrev)>10){
         warnings.push({
-          store: sName,
-          billA: cur.icdc||fmtDate(cur.date),
-          dateA: fmtDate(cur.date),
+          store:    sName,
+          storeId:  storeId,           // needed to look up bill in correct store
+          billA:    cur.icdc||fmtDate(cur.date),
+          dateA:    fmtDate(cur.date),
           credited,
-          billB: next.icdc||fmtDate(next.date),
-          dateB: fmtDate(next.date),
+          billB:    next.icdc||fmtDate(next.date),
+          billBid:  next.id,           // numeric id to patch the bill directly
+          billBicdc:next.icdc||'',     // ICDC as secondary lookup key
+          dateB:    fmtDate(next.date),
           nextPrev
         });
       }
@@ -4529,12 +4587,43 @@ function rptFinancials(bills, from, to){
   const warningHtml = warnings.length ? `
     <div class="alert alert-warn" style="margin-bottom:12px">
       <div style="font-weight:700;margin-bottom:6px">⚠️ Possible Missing Bills — Credit Chain Mismatch (${warnings.length})</div>
-      ${warnings.map(w=>`
-        <div style="font-size:.75rem;padding:4px 0;border-bottom:1px solid rgba(0,0,0,.06)">
-          ${storeCol?`<span style="color:var(--t3)">[${w.store}]</span> `:''} 
-          Bill <strong>${w.billA}</strong> (${w.dateA}) credited <strong>${fmtR(w.credited)}</strong>
-          but next bill <strong>${w.billB}</strong> (${w.dateB}) shows prev credit <strong>${fmtR(w.nextPrev)}</strong>
-          — difference: <strong style="color:var(--red)">${fmtR(Math.abs(w.credited-w.nextPrev))}</strong>
+      ${warnings.map((w,wi)=>`
+        <div style="font-size:.75rem;padding:6px 0;border-bottom:1px solid rgba(0,0,0,.06)">
+          <div style="display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap">
+            <div style="flex:1">
+              ${storeCol?`<span style="color:var(--t3)">[${w.store}]</span> `:''}
+              Bill <strong>${w.billA}</strong> (${w.dateA}) credited <strong>${fmtR(w.credited)}</strong>
+              but next bill <strong>${w.billB}</strong> (${w.dateB}) shows prev credit <strong>${fmtR(w.nextPrev)}</strong>
+              — difference: <strong style="color:var(--red)">${fmtR(Math.abs(w.credited-w.nextPrev))}</strong>
+            </div>
+            <button class="btn btn-xs" style="white-space:nowrap;flex-shrink:0"
+              onclick="showChallanForm(${wi})">✏️ Fix e-Challan</button>
+          </div>
+          <div id="challan-form-${wi}" style="display:none;margin-top:8px;background:var(--bg2);border-radius:8px;padding:10px">
+            <div style="font-weight:600;margin-bottom:4px;font-size:.8rem">✏️ Edit Bill: <span style="color:var(--blue)">${w.billB}</span></div>
+            <div style="font-size:.7rem;color:var(--t3);margin-bottom:8px">Set the e-Challan and Prev Credit values directly on this bill</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">
+              <div>
+                <label style="font-size:.7rem;color:var(--t3)">e-Challan / DD Amount (₹)</label>
+                <input class="fc" type="number" id="ch-echallan-${wi}"
+                  value="${w.nextPrev.toFixed(2)}" style="font-size:.85rem;font-weight:600">
+              </div>
+              <div>
+                <label style="font-size:.7rem;color:var(--t3)">e-Challan Reference No.</label>
+                <input class="fc" type="text" id="ch-ref-${wi}"
+                  placeholder="e.g. 1.6503..." style="font-size:.85rem">
+              </div>
+              <div>
+                <label style="font-size:.7rem;color:var(--t3)">Prev Credit (₹)</label>
+                <input class="fc" type="number" id="ch-prev-${wi}"
+                  value="${w.credited.toFixed(2)}" style="font-size:.85rem;font-weight:600">
+              </div>
+            </div>
+            <div style="display:flex;gap:6px;justify-content:flex-end">
+              <button class="btn btn-xs" onclick="document.getElementById('challan-form-${wi}').style.display='none'">Cancel</button>
+              <button class="btn btn-xs btn-primary" onclick="patchBillChallan(\'${w.billBid}\',\'${w.billBicdc}\',\'${w.storeId}\',${wi})">💾 Save to Bill ${w.billB.slice(-6)}</button>
+            </div>
+          </div>
         </div>`).join('')}
     </div>` : `<div class="alert alert-ok" style="margin-bottom:12px">✅ Credit chain is consistent — no missing bills detected</div>`;
 
