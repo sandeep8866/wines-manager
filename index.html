@@ -319,6 +319,10 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
     <input type="file" id="pfinput" accept=".pdf" multiple style="display:none"
            onchange="handlePDFs(this)">
     <div id="pdf-status" style="margin-top:8px"></div>
+    <div style="margin-top:6px;text-align:right">
+      <button class="btn btn-xs" onclick="showPdfDebug()" style="color:var(--t3);font-size:.7rem">🔬 Debug last PDF lines</button>
+    </div>
+    <div id="pdf-debug-panel" style="display:none;margin-top:8px;background:var(--bg2);border-radius:8px;padding:10px;font-family:monospace;font-size:.68rem;max-height:400px;overflow-y:auto;white-space:pre-wrap;color:var(--t2)"></div>
   </div>
 
   <!-- Google Drive PDF Auto-Fetch -->
@@ -480,7 +484,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
             <th style="cursor:pointer;white-space:nowrap" onclick="sortMRPTable('code')">Code <span id="mrp-sort-code" style="font-size:.65rem;color:var(--t3)">↕</span></th>
             <th style="cursor:pointer;white-space:nowrap" onclick="sortMRPTable('pack')">Pack <span id="mrp-sort-pack" style="font-size:.65rem;color:var(--t3)">↕</span></th>
             <th style="cursor:pointer;white-space:nowrap" onclick="sortMRPTable('type')">Type <span id="mrp-sort-type" style="font-size:.65rem;color:var(--t3)">↕</span></th>
-            <th class="num" style="cursor:pointer;white-space:nowrap" onclick="sortMRPTable('issue')">Issue Price/Case ₹ <span id="mrp-sort-issue" style="font-size:.65rem;color:var(--t3)">↕</span></th>
+            <th class="num" style="cursor:pointer;white-space:nowrap" onclick="sortMRPTable('issue')">Issue Price/Btl ₹ <span id="mrp-sort-issue" style="font-size:.65rem;color:var(--t3)">↕</span></th>
             <th class="num" style="cursor:pointer;white-space:nowrap" onclick="sortMRPTable('margin')">Sp.Margin/Btl ₹ <span id="mrp-sort-margin" style="font-size:.65rem;color:var(--t3)">↕</span></th>
             <th class="num" style="cursor:pointer;white-space:nowrap" onclick="sortMRPTable('mrp')">MRP/Btl ₹ <span id="mrp-sort-mrp" style="font-size:.65rem;color:var(--t3)">↕</span></th>
             <th class="num" style="white-space:nowrap;color:var(--t3)">Gross Margin/Case</th>
@@ -1976,6 +1980,7 @@ async function extractPDF(file){
   // Build full text for header parsing
   const fullText = allPageLines.join('\n');
   const rawText  = rawItems.map(it=>it.str).join('');
+  window._lastRawLines = allPageLines; // expose for PDF debug tool
 
   // Cluster rawItems into coordinate rows (for extractItemRows)
   const rows = [];
@@ -2240,19 +2245,50 @@ function parseICDCItemsFallback(lines){
   // e.g. ["1 5016 KING FISHER PREMIUM LAGER", "BEER Beer G 24 / 330 ml ..."]
   //   → "1 5016 KING FISHER PREMIUM LAGER BEER Beer G 24 / 330 ml ..."
   const ITEM_START = /^\s*(?:\d{1,3}\s+\d{4}|\d{5,7}\s)/;
+  // A line is "complete" (has quantity data) if it already contains a pack-size
+  // pattern AND at least two money-like numbers — don't append more text to it.
+  const IS_COMPLETE = ln => /\d+\s*\/\s*\d+\s*ml/i.test(ln) && (ln.match(/\d{2,3},\d{3}/g)||[]).length >= 2;
+  // A line that looks purely like a brand name continuation (all uppercase words,
+  // no digits except possibly a year like 12YRS) should be prepended to the NEXT
+  // item if the previous item is already complete — not appended to it.
+  // A line is a brand-name-only continuation if it's pure uppercase text,
+  // has no pack-size, and is at least 5 chars (avoids single words like "BEER",
+  // "RUM", "WHISKY" which are part of the current item's wrapping name).
+  const IS_BRANDNAME_ONLY = ln => {
+    const t = ln.trim();
+    return /^[A-Z][A-Z\s'`\-\.&0-9]{4,}$/.test(t)   // ≥5 uppercase chars
+      && !/\d+\s*\/\s*\d+\s*ml/i.test(t)           // no pack-size
+      && !/^\d{1,3}\s+\d{4}/.test(t)                  // not a new item row
+      && t.split(/\s+/).length >= 2;                    // at least 2 words
+  };
+
   const joinedLines = [];
+  let pendingBrandName = ''; // brand name line waiting for its item row
+
   for(const ln of lines){
     if(ln.trim() === '') continue;
-    // If this line starts a new item row → push as new line
-    if(ITEM_START.test(ln) || joinedLines.length === 0){
+
+    if(ITEM_START.test(ln)){
+      // New item row — prepend any waiting brand name text
+      joinedLines.push(pendingBrandName ? pendingBrandName + ' ' + ln.trim() : ln);
+      pendingBrandName = '';
+    } else if(IS_BRANDNAME_ONLY(ln.trim()) && joinedLines.length > 0 && IS_COMPLETE(joinedLines[joinedLines.length-1])){
+      // Previous item is complete — this brand name belongs to the NEXT item
+      pendingBrandName = (pendingBrandName ? pendingBrandName + ' ' : '') + ln.trim();
+    } else if(joinedLines.length === 0){
       joinedLines.push(ln);
     } else {
-      // Continuation: append to previous line with space
+      // Regular continuation — append to previous line
       joinedLines[joinedLines.length - 1] += ' ' + ln.trim();
     }
   }
   const fullText = joinedLines.join('\n')
-    .replace(/\bml(\d)/gi, 'ml $1');  // "ml10" → "ml 10"
+    // Normalize fused tokens from PDF cell extraction (pages 2-3 of this bill format)
+    .replace(/\bml(\d)/gi, 'ml $1')                       // "ml10"       → "ml 10"
+    .replace(/\bIML([GPC])\b/g, 'IML $1')                 // "IMLG"       → "IML G"
+    .replace(/\bIML([GPC])(?=\s*\d)/g, 'IML $1')         // "IMLG12"     → "IML G 12"
+    .replace(/\bDuty\s*Paid([GPC])\b/gi, 'Duty Paid $1') // "DutyPaidG"  → "Duty Paid G"
+    .replace(/\bBeer([GPC])\b/gi, 'Beer $1');              // "BeerG"      → "Beer G"
 
   // ── Master regex: matches ALL variants in one pass ────────────────────────
   // Breakdown:
@@ -2281,8 +2317,8 @@ function parseICDCItemsFallback(lines){
 
     // ── Product type ─────────────────────────────────────────────────────────
     let ptype = 'IML';
-    if(/\bBeer\b/i.test(rest))        ptype = 'Beer';
-    else if(/Duty\s*Paid/i.test(rest)) ptype = 'Duty Paid';
+    if(/\bBeer\s*[GPC]?\b/i.test(rest))        ptype = 'Beer';
+    else if(/Duty\s*Paid/i.test(rest))           ptype = 'Duty Paid';
 
     // ── Pack size "N / NNN ml" ────────────────────────────────────────────────
     const psM      = rest.match(/(\d+)\s*\/\s*(\d+)\s*ml/i);
@@ -2291,11 +2327,12 @@ function parseICDCItemsFallback(lines){
     const packCount = packNParen || packNFromSize;
 
     // ── Pack type G/P/C ───────────────────────────────────────────────────────
-    const ptM  = rest.match(/\b(?:IML|Beer|Duty\s*Paid)\s+([GPC])\b/i);
-    const ppack = ptM ? ptM[1] : '';
+    const ptM  = rest.match(/(?:IML|Beer|Duty\s*Paid)\s*([GPC])\b/i);
+    const ppack = ptM ? ptM[1].toUpperCase() : '';
 
     // ── Brand name: text before the first type keyword ────────────────────────
-    const typeIdx = rest.search(/\b(IML|Beer|Duty\s+Paid)\b/i);
+    // Also matches fused forms: "IMLG", "IMLP", "DutyPaidG" etc.
+    const typeIdx = rest.search(/(?:Duty\s*Paid|IML|Beer)\s*[GPC]\b/i);
     let brandName = '';
     if(typeIdx > 0){
       // Normal case: brand name appears before IML/Beer keyword
@@ -2379,13 +2416,26 @@ function parseICDCItemsFallback(lines){
           && !junkPattern.test(brandName);
         if(!extractedIsLongerAndClean) brandName = pd[6];
       } else {
-        // No TSBCL/DP entry — keep whatever text we extracted from the PDF line
-        // Even a partial/descriptor name is better than just the code
+        // No TSBCL entry (Duty Paid / unknown code) — extract best available text.
+        // Collect ALL uppercase words from the line, strip pack/type junk, use what's left.
         if(!brandName || brandName.length < 3){
-          const anyText = rest.match(/[A-Z][A-Z\s'`\-\.&]{4,}/);
-          if(anyText){
-            const t = anyText[0].replace(/\b(IML|Beer|Duty\s*Paid|[GPC])\b/gi,'').trim();
-            if(t.length >= 4) brandName = t.slice(0,80);
+          // Try trailing text first (most reliable position)
+          const trailDP = rest.match(/[\d,]+\.\d{2}\s+([A-Z][A-Z\s'\`\-\.&]{3,})\s*$/i);
+          if(trailDP){
+            const t = trailDP[1].replace(/\b(IML|Beer|Duty\s*Paid|[GPC]\b)/gi,'').trim();
+            if(t.length >= 3) brandName = t.slice(0,80);
+          }
+          // Fallback: any uppercase sequence after stripping known junk tokens
+          if(!brandName || brandName.length < 3){
+            const stripped = rest
+              .replace(/\b(Duty\s*Paid|IML|Beer|[GPC])\s+\d[\d\/\s]*ml\b/gi,'')
+              .replace(/\b\d[\d,\.]+\b/g,' ')
+              .replace(/\s{2,}/g,' ').trim();
+            const anyText = stripped.match(/[A-Z][A-Z\s'\`\-\.&]{3,}/);
+            if(anyText){
+              const t = anyText[0].trim();
+              if(t.length >= 3) brandName = t.slice(0,80);
+            }
           }
         }
       }
@@ -2630,9 +2680,11 @@ function addToStock(name, bnum, ptype, packSize, cases, btlRate, btlsDel, packQt
   cleanName = cleanName.replace(/^(IML|Beer|Duty\s*Paid)\s+(\d{4})\s*/i,'').trim() || cleanName;
   const isCodeOnly = /^\d{4}\s*\(\d+\)\s*$/.test((name||'').trim())
                   || /^(IML|Beer|Duty\s*Paid)\s+\d{4}/i.test((name||'').trim());
-  // Extract 4-digit code from bnum OR anywhere in name (covers 'IML 1307', '1307 (24)', '0475')
-  const code4      = (bnum||'').match(/(\d{4})/)?.[1]
-                  || (name||'').match(/(\d{4})/)?.[1] || '';
+  // Extract 4-digit code from bnum, or from name ONLY when it's in explicit
+  // code format: 'IML 1307', '1307 (24)', '0475' — never from a real brand name
+  const code4      = (bnum||'').match(/^(\d{4})/)?.[1]
+                  || (name||'').match(/^(?:IML|Beer|Duty\s*Paid)\s+(\d{4})\b/i)?.[1]
+                  || (name||'').match(/^(\d{4})\s*(?:\(\d+\))?\s*$/)?.[1] || '';
   // ── TSBCL lookup: resolve name when it's code-only or a generic descriptor ──
   const isDescriptor = /^(BLENDED|SCOTCH|MALT|GRAIN|VATTED|PREMIUM|WHISKY|VODKA|BRANDY|RUM|BEER|STRONG|LAGER|RESERVE|CLASSIC|SELECT|DELUXE|SPECIAL|ULTRA|SUPERIOR|ORIGINAL|FLAVOU|CITRUS|CRANBERRY|ORANGE|APPLE|LIME|MINT|AND\s|DY\s|IML\s|Beer\s)/i.test(cleanName.trim());
   if((isCodeOnly || isDescriptor || !cleanName || cleanName.length < 3) && code4){
@@ -2729,6 +2781,44 @@ function filterStock(f, btn){
 // ── Brand Name Audit ─────────────────────────────────────────────────────────
 // Shows each stock entry alongside every bill date it appeared in, making it
 // easy to spot which brands have bad/missing names and which PDF dates to check.
+function showPdfDebug(){
+  const panel = document.getElementById('pdf-debug-panel');
+  if(panel.style.display !== 'none'){ panel.style.display='none'; return; }
+  const lines = window._lastRawLines;
+  if(!lines || !lines.length){
+    panel.style.display='block';
+    panel.textContent='No PDF processed yet — upload a bill first.';
+    return;
+  }
+  // Show each line with index, highlighting item rows and suspicious continuations
+  const ITEM_START = /^\s*(?:\d{1,3}\s+\d{4}|\d{5,7}\s)/;
+  const HAS_PACK   = /\d+\s*\/\s*\d+\s*ml/i;
+  let out = `=== Raw PDF Lines (${lines.length} total) ===\n\n`;
+  lines.forEach((ln,i)=>{
+    const isItem = ITEM_START.test(ln);
+    const hasPack = HAS_PACK.test(ln);
+    const tag = isItem ? (hasPack ? '[ITEM]  ' : '[ITEM?] ') : '[cont]  ';
+    out += `${String(i+1).padStart(4,'0')} ${tag}${ln}\n`;
+  });
+  panel.textContent = out;
+  panel.style.display = 'block';
+}
+
+function auditRenameBrand(stockId){
+  const inp = document.getElementById('audit-rename-'+stockId);
+  const newName = (inp?.value||'').trim();
+  if(!newName) return toast('Enter a brand name');
+  const stock = getStock();
+  if(!stock[stockId]) return toast('Stock entry not found');
+  stock[stockId].name = newName;
+  setStock(stock);
+  toast('✅ Renamed — re-open audit to refresh');
+  // Mark row as fixed
+  const row = document.getElementById('audit-row-'+stockId);
+  if(row) row.style.opacity = '0.5';
+  renderStockTable(); renderDash();
+}
+
 function showBrandAudit(){
   const panel = document.getElementById('brand-audit-panel');
   if(panel.style.display !== 'none'){ panel.style.display='none'; return; }
@@ -2777,13 +2867,20 @@ function showBrandAudit(){
     const datesHtml = dates.length
       ? dates.map(d=>`<span style="background:var(--bg2);border-radius:4px;padding:1px 5px;margin:1px">${d}</span>`).join(' ')
       : '<span style="color:var(--t3)">No bills found</span>';
-    html += `<div style="border-bottom:1px solid var(--line);padding:6px 0">
+    html += `<div style="border-bottom:1px solid var(--line);padding:6px 0" id="audit-row-${s.id}">
       <div style="display:flex;gap:6px;align-items:flex-start">
         <span style="color:${isBad?'var(--red)':'var(--green)'};font-size:.9rem">${isBad?'⚠️':'✓'}</span>
         <div style="flex:1">
           <span style="font-weight:600">${esc(displayName)}</span>
           <span style="color:var(--t3);font-size:.7rem"> · ${esc(s.bnum||code||'')} · ${s.packSize||''}</span>
           <div style="margin-top:3px;font-size:.7rem">${datesHtml}</div>
+          ${isBad ? `<div style="margin-top:5px;display:flex;gap:4px;align-items:center">
+            <input class="fc" type="text" id="audit-rename-${s.id}"
+              placeholder="Enter correct brand name…"
+              style="font-size:.75rem;flex:1;max-width:280px">
+            <button class="btn btn-xs btn-primary"
+              onclick="auditRenameBrand('${s.id}')">✏️ Rename</button>
+          </div>` : ''}
         </div>
       </div>
     </div>`;
@@ -2805,9 +2902,14 @@ function repairStockNames(){
     const nmCleaned = nm.replace(/\s+\d{4,}\s*$/, '').trim();
     if(nmCleaned !== nm && nmCleaned.length > 3){ s.name = nmCleaned; changed = true; }
 
-    // Step 2: Extract brand code from bnum or name string
-    const code4 = (s.bnum||'').match(/(\d{4})/)?.[1]
-                || nm.match(/(\d{4})/)?.[1] || '';
+    // Step 2: Extract brand code — ONLY from bnum field, or from names that are
+    // explicitly in code-style format like "IML 1307" or "1307 (24)".
+    // Never extract from middle of a real brand name (avoids false matches like
+    // "KINGFISHER 650ml" → 6500, or "WHISKY 8006" → JW Green Label).
+    const bnumCode = (s.bnum||'').match(/^(\d{4})/)?.[1] || '';
+    const nameCode = nm.match(/^(?:IML|Beer|Duty\s*Paid)\s+(\d{4})/i)?.[1]
+                  || nm.match(/^(\d{4})\s*(?:\(\d+\))?\s*$/)?.[1] || '';
+    const code4 = bnumCode || nameCode;
     if(!code4) return;
 
     // Step 3: Look up official name from TSBCL/DP database
@@ -2815,19 +2917,38 @@ function repairStockNames(){
     if(!pd || !pd[6] || pd[6].length < 3) return;
     const officialName = pd[6];
 
-    // Step 4: Replace if stored name is bad OR if official name is more complete
+    // Step 4: Replace ONLY if stored name is clearly bad (code-only or descriptor).
+    // Do NOT replace a real brand name just because the official name is longer —
+    // that caused phantom entries like "JOHNNIE WALKER GREEN LABEL" appearing from
+    // unrelated stock entries that happened to contain the digits 8006.
     const storedName = (s.name||'').trim();
     const storedIsBad = storedName.length < 3
       || /^\d{4}(\s*\(\d+\))?\s*$/.test(storedName)
       || /^(IML|Beer|Duty\s*Paid)\s+\d/i.test(storedName)
       || /^(BLENDED|SCOTCH|MALT|GRAIN|VATTED|PREMIUM|WHISKY|VODKA|BRANDY|RUM|BEER|STRONG|LAGER|RESERVE|CLASSIC|SELECT|DELUXE|SPECIAL|ULTRA|SUPERIOR|ORIGINAL|FLAVOU|CITRUS|CRANBERRY|ORANGE|APPLE|LIME|MINT)/i.test(storedName);
-    const officialIsBetter = officialName.length > storedName.length + 3;
-    if(storedIsBad || officialIsBetter){
+    if(storedIsBad){
       s.name = officialName;
       if(!/^\d{4}/.test((s.bnum||'').trim())) s.bnum = code4;
       changed = true;
     }
   });
+  // Remove phantom stock entries: DP/TSBCL entries that have no bills backing
+  // them (purchased=0, opening=0, closing=0) — these were created by the old
+  // overly-aggressive repairStockNames logic and have no real data.
+  const bills = ga('bills');
+  const billedCodes = new Set();
+  bills.forEach(b=>(b.items||[]).forEach(it=>{
+    const c = (it.brandNum||'').match(/^(\d{4})/)?.[1]
+           || (it.brandName||'').match(/^(?:IML|Beer|Duty\s*Paid)\s+(\d{4})\b/i)?.[1] || '';
+    if(c) billedCodes.add(c);
+  }));
+  Object.entries(stock).forEach(([id,s])=>{
+    const c = (s.bnum||'').match(/^(\d{4})/)?.[1] || '';
+    const isPhantom = c && !billedCodes.has(c)
+      && (s.purchased||0) === 0 && (s.opening||0) === 0;
+    if(isPhantom){ delete stock[id]; changed = true; }
+  });
+
   if(changed) setStock(stock);
 }
 
@@ -3185,19 +3306,38 @@ function renderBillTally(){
       // Key by brand+size only so cess auto-fills across bills
       const cessKey  = `${bn}_${sizeML}`;
       const cess     = getTallyCess(cessKey, globalCess);
-      const issueAmt = pd ? cases*pd[0] : 0;
-      const marginAmt= pd ? totalBtl*pd[1] : 0;
+      // For btl-only delivery (0 cases, N loose bottles): use btlRate × btlsDel
+      // For case delivery: use issuePrice/case × cases
+      const btlsOnlyDelivery = cases === 0 && extraBtls > 0;
+      let issueAmt, marginAmt;
+      if(btlsOnlyDelivery){
+        // Use the actual btlRate from the bill (most accurate for loose bottle billing)
+        const btlRateFromBill = it.btlRate || (pd ? pd[0]/packQty : 0);
+        issueAmt  = btlRateFromBill * extraBtls;
+        marginAmt = pd ? extraBtls * pd[1] : 0;
+      } else {
+        issueAmt  = pd ? cases * pd[0] : 0;
+        marginAmt = pd ? totalBtl * pd[1] : 0;
+      }
       const cessAmt  = cess * totalBtl;
       return {it, bn, sml:sizeML, packQty, totalBtl, cessKey, cess, issueAmt, marginAmt, cessAmt,
         lineTotal: issueAmt + marginAmt + cessAmt,
-        issuePerCase: pd?pd[0]:0, marginPerBtl: pd?pd[1]:0, mrp: pd?pd[2]:0, hasPd: !!pd};
+        issuePerCase: pd?pd[0]:0, marginPerBtl: pd?pd[1]:0, mrp: pd?pd[2]:0,
+        btlsOnlyDelivery, hasPd: !!pd};
     });
-    const calcTotal=items.reduce((s,r)=>s+r.lineTotal,0);
+    const itemsTotal   = items.reduce((s,r)=>s+r.lineTotal,0);
+    const mrpRounding  = b.mrpRounding  || 0;
+    const exciseCess   = b.exciseCess   || 0;
+    const tcs          = b.tcs          || 0;
+    const profTax      = b.profTax      || 0;
+    // netInvoice = invoiceValue + mrpRounding (exciseCess/TCS are credit deductions, not part of invoice)
+    const calcTotal    = Math.round((itemsTotal + mrpRounding)*100)/100;
     const actual=b.netInvoice||0;
     const diff=Math.round((actual-calcTotal)*100)/100;
     const matched=Math.abs(diff)<5;
     const totalBtls=items.reduce((s,r)=>s+r.totalBtl,0);
-    return {b,items,calcTotal,actual,diff,matched,totalBtls};
+    const priceMismatches=items.filter(r=>r.hasPd&&r.it.btlRate&&Math.abs(r.it.btlRate-r.mrp)>1);
+    return {b,items,calcTotal,actual,diff,matched,totalBtls,itemsTotal,mrpRounding,exciseCess,tcs,profTax,priceMismatches};
   });
 
   const matchCount=tallied.filter(r=>r.matched).length;
@@ -3255,9 +3395,9 @@ function renderBillTally(){
                   <td style="padding:5px 4px;text-align:center;color:var(--t3)">${r.it.packQty||''}</td>
                   <td style="padding:5px 4px;text-align:center;color:var(--t3)">${r.it.sizeML?r.it.sizeML+'ml':(r.it.packSize||'—')}</td>
                   <td style="padding:5px 4px;text-align:right">${r.it.casesDel||0}</td>
-                  <td style="padding:5px 4px;text-align:right">${r.it.btlsDel||0}</td>
+                  <td style="padding:5px 4px;text-align:right${r.btlsOnlyDelivery?';color:var(--gold2);font-weight:600':''}">${r.it.btlsDel||0}${r.btlsOnlyDelivery?' 🍾':''}</td>
                   <td style="padding:5px 4px;text-align:right;font-weight:600">${r.totalBtl}</td>
-                  <td style="padding:5px 4px;text-align:right;color:var(--t3)">${r.issuePerCase?fmtR(r.issuePerCase):'—'}</td>
+                  <td style="padding:5px 4px;text-align:right;color:var(--t3)">${r.btlsOnlyDelivery?(r.it.btlRate?'₹'+r.it.btlRate+'/btl':'—'):r.issuePerCase?fmtR(r.issuePerCase):'—'}</td>
                   <td style="padding:5px 4px;text-align:right;color:var(--t3)">${r.marginPerBtl?fmtR(r.marginPerBtl):'—'}</td>
                   <td style="padding:5px 4px;text-align:right;background:rgba(181,114,10,.05)">
                     <input type="number" step="0.01" min="0"
@@ -3272,11 +3412,31 @@ function renderBillTally(){
                   <td style="padding:5px 4px;text-align:right;font-weight:700">${fmtR(r.lineTotal)}</td>
                 </tr>`).join('')}
               <tr style="background:var(--s3);font-weight:700;border-top:2px solid var(--border)">
-                <td colspan="9" style="padding:5px 8px;text-align:right;font-size:.7rem">BILL TOTAL →</td>
+                <td colspan="9" style="padding:5px 8px;text-align:right;font-size:.7rem">ITEMS SUBTOTAL →</td>
                 <td style="padding:5px 4px;text-align:right">${fmtR(items.reduce((s,r)=>s+r.issueAmt,0))}</td>
                 <td style="padding:5px 4px;text-align:right">${fmtR(items.reduce((s,r)=>s+r.marginAmt,0))}</td>
                 <td style="padding:5px 4px;text-align:right;color:var(--gold2)">${fmtR(items.reduce((s,r)=>s+r.cessAmt,0))}</td>
-                <td style="padding:5px 4px;text-align:right;font-size:.78rem">${fmtR(calcTotal)}</td>
+                <td style="padding:5px 4px;text-align:right;font-size:.78rem">${fmtR(itemsTotal)}</td>
+              </tr>
+              ${mrpRounding?`<tr style="background:var(--s2)">
+                <td colspan="12" style="padding:4px 8px;text-align:right;font-size:.68rem;color:var(--t3)">+ MRP Rounding:</td>
+                <td style="padding:4px 4px;text-align:right;font-size:.72rem">${fmtR(mrpRounding)}</td>
+              </tr>`:''}
+              ${exciseCess?`<tr style="background:var(--s2)">
+                <td colspan="12" style="padding:4px 8px;text-align:right;font-size:.68rem;color:var(--t3)">+ Special Excise Cess:</td>
+                <td style="padding:4px 4px;text-align:right;font-size:.72rem;color:var(--gold2)">${fmtR(exciseCess)}</td>
+              </tr>`:''}
+              ${tcs?`<tr style="background:var(--s2)">
+                <td colspan="12" style="padding:4px 8px;text-align:right;font-size:.68rem;color:var(--t3)">+ TCS:</td>
+                <td style="padding:4px 4px;text-align:right;font-size:.72rem">${fmtR(tcs)}</td>
+              </tr>`:''}
+              ${profTax?`<tr style="background:var(--s2)">
+                <td colspan="12" style="padding:4px 8px;text-align:right;font-size:.68rem;color:var(--t3)">+ Professional Tax:</td>
+                <td style="padding:4px 4px;text-align:right;font-size:.72rem">${fmtR(profTax)}</td>
+              </tr>`:''}
+              <tr style="background:var(--s3);font-weight:700">
+                <td colspan="12" style="padding:5px 8px;text-align:right;font-size:.72rem">CALCULATED TOTAL (incl. charges):</td>
+                <td style="padding:5px 4px;text-align:right;font-size:.82rem">${fmtR(calcTotal)}</td>
               </tr>
               <tr style="background:${matched?'rgba(39,174,96,.06)':'rgba(192,57,43,.06)'}">
                 <td colspan="12" style="padding:5px 8px;text-align:right;font-size:.7rem;font-weight:600">Actual Net Invoice (PDF):</td>
@@ -3288,17 +3448,11 @@ function renderBillTally(){
                   ${matched?'✅ Match':(diff>0?'+':'')+fmtR(diff)}
                 </td>
               </tr>
-              ${b.mrpRounding?`<tr style="background:var(--s2)">
-                <td colspan="12" style="padding:4px 8px;text-align:right;font-size:.68rem;color:var(--t3)">MRP Rounding (from bill):</td>
-                <td style="padding:4px 4px;text-align:right;font-size:.72rem;color:var(--t3)">${fmtR(b.mrpRounding)}</td>
-              </tr>`:''}
-              ${b.exciseCess?`<tr style="background:var(--s2)">
-                <td colspan="12" style="padding:4px 8px;text-align:right;font-size:.68rem;color:var(--t3)">Special Excise Cess (from bill):</td>
-                <td style="padding:4px 4px;text-align:right;font-size:.72rem;color:var(--gold2)">${fmtR(b.exciseCess)}</td>
-              </tr>`:''}
-              ${b.tcs?`<tr style="background:var(--s2)">
-                <td colspan="12" style="padding:4px 8px;text-align:right;font-size:.68rem;color:var(--t3)">TCS:</td>
-                <td style="padding:4px 4px;text-align:right;font-size:.72rem;color:var(--t3)">${fmtR(b.tcs)}</td>
+              ${priceMismatches.length?`<tr style="background:rgba(230,126,34,.07)">
+                <td colspan="13" style="padding:5px 8px;font-size:.68rem;color:#e67e22">
+                  ⚠️ <strong>Bottle Rate Mismatch</strong> (PDF vs TSBCL):
+                  ${priceMismatches.map(r=>`<br>• ${esc(cleanBrandName(r.it.brandName||r.it.bnum,r.it.brandNum))} — PDF: ₹${r.it.btlRate} / TSBCL MRP: ₹${r.mrp}`).join('')}
+                </td>
               </tr>`:''}
             </tbody>
           </table>
@@ -4048,19 +4202,37 @@ function rptBrandWise(bills, from, to){
   CS = prevCS;
 
   function resolveName(rawName, brandNum){
-    const isCodeOnly = /^\d{4}\s*\(\d+\)\s*$/.test((rawName||'').trim());
-    if(!isCodeOnly && rawName && rawName.trim().length > 3)
-      return rawName.replace(/^\d{4}\s*\(\d+\)\s*/,'').trim() || rawName.trim();
-    if(brandNum){
-      const cm = brandNum.match(/^(\d{4})/);
-      if(cm){
-        if(stockNameByCode[cm[1]]) return stockNameByCode[cm[1]];
-        const f = Object.values(stock).find(s=>s.bnum&&s.bnum.startsWith(cm[1])&&!/^\d{4}\s*\(/.test(s.name));
-        if(f) return f.name;
-      }
-      if(stockNameByCode[brandNum]) return stockNameByCode[brandNum];
+    const nm = (rawName||'').trim();
+    const isCodeOnly = /^\d{4}\s*\(\d+\)\s*$/.test(nm)
+                    || /^(IML|Beer|Duty\s*Paid)\s+\d{4}/i.test(nm);
+    const isDescriptor = /^(BLENDED|SCOTCH|MALT|GRAIN|VATTED|PREMIUM|WHISKY|VODKA|BRANDY|RUM|BEER|STRONG|LAGER|RESERVE|CLASSIC|SELECT|DELUXE|SPECIAL|ULTRA|SUPERIOR|ORIGINAL|FLAVOU|CITRUS|CRANBERRY|ORANGE|APPLE|LIME|MINT|DUTY\s*PAID)/i.test(nm);
+
+    // Extract 4-digit code from brandNum or code-format name
+    const cm = (brandNum||'').match(/^(\d{4})/)
+            || nm.match(/^(\d{4})/)
+            || nm.match(/^(?:IML|Beer|Duty\s*Paid)\s+(\d{4})/i);
+    const code4 = cm ? (cm[1]||cm[2]) : '';
+
+    // Try TSBCL / DP lookup first for code-only or descriptor names
+    if(code4 && (isCodeOnly || isDescriptor || nm.length < 4)){
+      try {
+        const pd = getPriceData(code4, 0);
+        if(pd && pd[6] && pd[6].length > 3) return pd[6];
+      } catch(e){}
     }
-    return (rawName||brandNum||'Unknown').trim();
+
+    // Good extracted name — use it
+    if(!isCodeOnly && !isDescriptor && nm.length > 3)
+      return nm.replace(/^\d{4}\s*\(\d+\)\s*/,'').trim() || nm;
+
+    // Stock name lookup by code
+    if(code4){
+      if(stockNameByCode[code4]) return stockNameByCode[code4];
+      const f = Object.values(stock).find(s=>s.bnum&&s.bnum.startsWith(code4)&&!/^\d{4}\s*\(/.test(s.name)&&!/^(BLENDED|SCOTCH|WHISKY|VODKA|BEER)/i.test(s.name));
+      if(f && f.name && f.name.length > 3) return f.name;
+    }
+    if(brandNum && stockNameByCode[brandNum]) return stockNameByCode[brandNum];
+    return (nm||brandNum||'Unknown').trim();
   }
 
   // Normalise a brand name to a grouping key when no brand code available
@@ -4104,7 +4276,12 @@ function rptBrandWise(bills, from, to){
         };
       }
       const e = brandMap[baseKey];
-      if(name.length > e.name.length) e.name = name;
+      // Only update name if new name is better — longer AND not a descriptor/code
+      const newIsBad = /^(BLENDED|SCOTCH|MALT|VATTED|WHISKY|VODKA|BRANDY|RUM|BEER|DUTY\s*PAID)/i.test(name)
+                    || /^\d{4}\s*\(/.test(name) || name.length < 4;
+      const oldIsBad = /^(BLENDED|SCOTCH|MALT|VATTED|WHISKY|VODKA|BRANDY|RUM|BEER|DUTY\s*PAID)/i.test(e.name)
+                    || /^\d{4}\s*\(/.test(e.name) || e.name.length < 4;
+      if(!newIsBad && (oldIsBad || name.length > e.name.length)) e.name = name;
       if(!e.brandCode && brandCode) e.brandCode = brandCode;
       const c = it.casesDel||0, bv = it.btlsDel||0, v = it.total||0;
       e.totalCases += c; e.totalBtls += bv; e.totalValue += v;
@@ -5901,12 +6078,17 @@ function renderMRPTable(){
   if(cautionEl){
     if(missingMRP.length || missingIssue.length){
       cautionEl.style.display='block';
-      cautionEl.innerHTML = `⚠️ <strong>${missingIssue.length} brands missing Issue Price, ${missingMRP.length} missing MRP</strong><br>
-        <button class="btn btn-sm btn-gold" style="margin-top:6px" onclick="autoPopulatePrices()">
-          ⚡ Auto-Fill from TSBCL List
+      cautionEl.innerHTML = `⚠️ <strong>${missingIssue.length} brands missing Issue Price, ${missingMRP.length} missing MRP</strong> —
+        <button class="btn btn-sm btn-gold" style="margin-left:6px" onclick="autoPopulatePrices()">
+          ⚡ Sync All from TSBCL
         </button>`;
     } else {
-      cautionEl.style.display='none';
+      cautionEl.style.display='block';
+      cautionEl.className='alert alert-info';
+      cautionEl.innerHTML=`✅ All prices filled —
+        <button class="btn btn-sm btn-gold" style="margin-left:6px" onclick="autoPopulatePrices()">
+          ⚡ Re-sync from TSBCL
+        </button>`;
     }
   }
 
@@ -5923,18 +6105,24 @@ function renderMRPTable(){
     const pd = getPriceData(bn, sizeML);
     const hasListPrice = !!pd;
 
-    // Issue price per bottle derived from per-case
-    const issuePricePerBtl = s.issuePrice ? (s.issuePrice / packQty).toFixed(2) : '';
+    // Issue price per bottle — prefer stored issuePriceBtl, compute from case if missing
+    const issuePriceBtl = s.issuePriceBtl
+      || (s.issuePrice && packQty ? Math.round((s.issuePrice / packQty) * 100) / 100 : 0);
+    // Use TSBCL live values for preview if not yet stored
+    const tsbclIssueBtl = pd ? Math.round((pd[0] / (pd[3]||packQty)) * 100) / 100 : 0;
+    const tsbclMrp      = pd ? pd[2] : 0;
+    const displayIssue  = issuePriceBtl || tsbclIssueBtl;
+    const displayMrp    = (s.btlRate||s.unitRate) || tsbclMrp;
 
     return `<tr data-name="${esc(displayName.toUpperCase())}" data-code="${esc(brandCode)}"
         data-pack="${sizeML}" data-type="${s.ptype||''}"
-        data-issue="${s.issuePrice||0}" data-margin="${s.spMargin||0}" data-mrp="${s.btlRate||s.unitRate||0}"
+        data-issue="${displayIssue||0}" data-margin="${s.spMargin||0}" data-mrp="${displayMrp||0}"
         ${(missingMrp||missingIss)?'style="background:rgba(220,50,50,.04)"':''}>
       <td style="max-width:180px;white-space:normal;word-break:break-word;font-size:.78rem;font-weight:600">
         ${esc(displayName)}
         ${missingIss||missingMrp?`<span style="color:var(--red);font-size:.6rem"> ⚠</span>`:''}
-        ${hasListPrice&&(missingIss||missingMrp)?`<br><button class="btn btn-xs btn-gold" style="margin-top:2px;font-size:.6rem;padding:1px 5px"
-          onclick="fillPriceFromList('${s.id}','${bn}',${sizeML})">⚡ Fill</button>`:''}
+        ${hasListPrice?`<br><button class="btn btn-xs btn-gold" style="margin-top:2px;font-size:.6rem;padding:1px 5px"
+          onclick="fillPriceFromList('${s.id}','${bn}',${sizeML})">⚡ Fill from TSBCL</button>`:''}
       </td>
       <td>
         <input class="fc" type="text"
@@ -5946,14 +6134,15 @@ function renderMRPTable(){
       <td style="font-size:.7rem;color:var(--t3);white-space:nowrap">${s.packSize||'—'}</td>
       <td><span class="tag ${s.ptype==='Beer'?'tag-beer':s.ptype==='Duty Paid'?'tag-dp':'tag-iml'}">${s.ptype||'IML'}</span></td>
       <td class="num">
-        <div style="font-size:.65rem;color:var(--t3);text-align:right;margin-bottom:1px">per case</div>
+        <div style="font-size:.65rem;color:var(--t3);text-align:right;margin-bottom:1px">per bottle</div>
         <input class="fc" type="number" step="0.01"
-          style="width:90px;padding:4px 6px;text-align:right;font-size:.8rem;${missingIss?'border-color:rgba(220,50,50,.5);':''}"
-          value="${s.issuePrice||''}" placeholder="0.00"
-          title="Issue Price per CASE (${packQty} bottles)"
-          onchange="savePriceField('${s.id}','issuePrice',this.value)"
-          onblur="savePriceField('${s.id}','issuePrice',this.value)">
-        ${issuePricePerBtl?`<div style="font-size:.62rem;color:var(--t3);text-align:right;margin-top:1px">₹${issuePricePerBtl}/btl</div>`:''}
+          style="width:80px;padding:4px 6px;text-align:right;font-size:.82rem;font-weight:600;${missingIss?'border-color:rgba(220,50,50,.5);':''}"
+          value="${issuePriceBtl||''}" placeholder="0.00"
+          title="Issue Price per bottle (TSBCL: ₹${tsbclIssueBtl}/btl)"
+          onchange="saveIssuePriceBtl('${s.id}',this.value,${packQty})"
+          onblur="saveIssuePriceBtl('${s.id}',this.value,${packQty})">
+        ${s.issuePrice?`<div style="font-size:.6rem;color:var(--t3);text-align:right;margin-top:1px">₹${s.issuePrice}/case</div>`:''}
+        ${(!issuePriceBtl&&tsbclIssueBtl)?`<div style="font-size:.6rem;color:var(--blue,#4a90d9);text-align:right;margin-top:1px">TSBCL: ₹${tsbclIssueBtl}</div>`:''}
       </td>
       <td class="num">
         <div style="font-size:.65rem;color:var(--t3);text-align:right;margin-bottom:1px">per bottle</div>
@@ -5969,17 +6158,49 @@ function renderMRPTable(){
         <input class="fc" type="number" step="0.01"
           style="width:80px;padding:4px 6px;text-align:right;font-size:.82rem;font-weight:600;${missingMrp?'border-color:rgba(220,50,50,.5);':''}"
           value="${s.btlRate||s.unitRate||''}" placeholder="0.00"
-          title="MRP per bottle"
+          title="MRP per bottle (TSBCL: ₹${tsbclMrp}/btl)"
           onchange="saveSingleMRP('${s.id}',this.value)"
           onblur="saveSingleMRP('${s.id}',this.value)">
+        ${(!( s.btlRate||s.unitRate)&&tsbclMrp)?`<div style="font-size:.6rem;color:var(--blue,#4a90d9);text-align:right;margin-top:1px">TSBCL: ₹${tsbclMrp}</div>`:''}
       </td>
       <td class="num" style="font-size:.75rem;color:var(--t3)">
-        ${(s.btlRate||s.unitRate)&&s.issuePrice?`₹${(((s.btlRate||s.unitRate)*packQty)-s.issuePrice).toFixed(2)}`:'—'}
+        ${displayMrp&&issuePriceBtl?`₹${(displayMrp-issuePriceBtl).toFixed(2)}`:'—'}
       </td>
       <td><button class="btn btn-xs btn-out" onclick="delStock('${s.id}')" style="color:var(--red)">🗑</button></td>
     </tr>`;
   }).join('');
   filterMRPTable();
+}
+
+
+// ── Auto-populate all prices from TSBCL embedded list ────────────────────────
+function autoPopulatePrices(){
+  const stock  = getStock();
+  let filled = 0, skipped = 0, missing = 0;
+
+  Object.values(stock).forEach(s => {
+    const bn     = String(s.bnum||'').replace(/^0+/,'');
+    const sizeML = s.sizeML || parseInt((s.packSize||'').split('/').pop()?.replace(/ml/i,'')) || 0;
+    const pd     = getPriceData(bn, sizeML);
+
+    if(!pd){ missing++; return; }
+
+    const [issuePriceCase, spMargin, mrp, packQty] = pd;
+    const issuePriceBtl = packQty > 0 ? Math.round((issuePriceCase / packQty) * 100) / 100 : issuePriceCase;
+
+    // Update all price fields from TSBCL — always overwrite with official values
+    s.issuePrice     = issuePriceCase;   // stored per case for margin calc
+    s.issuePriceBtl  = issuePriceBtl;    // per bottle convenience field
+    s.spMargin       = spMargin;
+    s.btlRate        = mrp;
+    s.unitRate       = mrp;
+    s.packQty        = packQty || s.packQty;
+    filled++;
+  });
+
+  setStock(stock);
+  renderMRPTable();
+  toast(`✅ Filled ${filled} brands from TSBCL list${missing?' · '+missing+' not found (Duty Paid/unknown)':''}`);
 }
 
 // Fill price for a single brand from embedded TSBCL list
@@ -5989,12 +6210,17 @@ function fillPriceFromList(stockId, brandNum, sizeML){
   if(!s) return;
   const pd = getPriceData(brandNum, sizeML);
   if(!pd){ toast('No price data found for this brand'); return; }
-  s.issuePrice = pd[0];  // per case
-  s.spMargin   = pd[1];  // per bottle
-  s.unitRate   = pd[2];  // MRP per bottle
+  const [issuePriceCase, spMargin, mrp, packQty] = pd;
+  const issuePriceBtl = packQty > 0 ? Math.round((issuePriceCase / packQty) * 100) / 100 : issuePriceCase;
+  s.issuePrice    = issuePriceCase;
+  s.issuePriceBtl = issuePriceBtl;
+  s.spMargin      = spMargin;
+  s.btlRate       = mrp;
+  s.unitRate      = mrp;
+  if(packQty) s.packQty = packQty;
   setStock(stock);
   renderMRPTable();
-  toast(`✅ ${cleanBrandName(s.name, s.bnum)} — prices filled from TSBCL list`);
+  toast(`✅ ${cleanBrandName(s.name, s.bnum)} — Issue ₹${issuePriceBtl}/btl · MRP ₹${mrp}/btl`);
 }
 
 let mrpSortDir = {};
@@ -6051,8 +6277,9 @@ function cleanBrandName(name, bnum){
     || /^\d{4}(\s*\(\d+\))?\s*$/.test(result)
     || /^(BLENDED|SCOTCH|MALT|GRAIN|VATTED|PREMIUM|WHISKY|VODKA|BRANDY|RUM|BEER|STRONG|LAGER|RESERVE|CLASSIC|SELECT|DELUXE|SPECIAL|ULTRA|SUPERIOR|ORIGINAL|FLAVOU|CITRUS|CRANBERRY|ORANGE|APPLE|LIME|MINT)/i.test(result);
   if(needsLookup){
-    const code = (bnum||'').match(/(\d{4})/)?.[1]
-              || (name||'').match(/(\d{4})/)?.[1] || '';
+    const code = (bnum||'').match(/^(\d{4})/)?.[1]
+              || (name||'').match(/^(?:IML|Beer|Duty\s*Paid)\s+(\d{4})\b/i)?.[1]
+              || (name||'').match(/^(\d{4})\s*(?:\(\d+\))?\s*$/)?.[1] || '';
     if(code){
       try{
         const pd = getPriceData(code, 0);
@@ -6081,6 +6308,15 @@ function savePriceField(id, field, val){
   const stock = getStock();
   if(!stock[id]) return;
   stock[id][field] = parseFloat(val)||0;
+  setStock(stock);
+}
+
+function saveIssuePriceBtl(id, val, packQty){
+  const stock = getStock();
+  if(!stock[id]) return;
+  const btl = parseFloat(val)||0;
+  stock[id].issuePriceBtl = btl;
+  stock[id].issuePrice    = packQty > 0 ? Math.round(btl * packQty * 100) / 100 : btl;
   setStock(stock);
 }
 
@@ -6312,141 +6548,18 @@ function tcDrop(e){
 
 // ── Duty Paid (imported liquor) brand name lookup — 8xxx codes not in TSBCL ──
 // Key: brandCode  Value: [name, packType]
+// DP_BRAND_NAMES — verified codes from actual ICDC Telangana Duty Paid bills.
+// Only codes confirmed from real PDFs are listed here.
 const DP_BRAND_NAMES = {
-  "8001":"JOHNNIE WALKER RED LABEL BLENDED SCOTCH WHISKY",
-  "8002":"JOHNNIE WALKER BLACK LABEL 12YRS BLENDED SCOTCH WHISKY",
-  "8003":"JOHNNIE WALKER DOUBLE BLACK BLENDED SCOTCH WHISKY",
-  "8004":"JOHNNIE WALKER GOLD RESERVE BLENDED SCOTCH WHISKY",
-  "8005":"JOHNNIE WALKER BLUE LABEL BLENDED SCOTCH WHISKY",
-  "8006":"JOHNNIE WALKER GREEN LABEL 15YRS BLENDED MALT SCOTCH WHISKY",
-  "8007":"CHIVAS REGAL 12YRS BLENDED SCOTCH WHISKY",
-  "8008":"CHIVAS REGAL 18YRS BLENDED SCOTCH WHISKY",
-  "8009":"CHIVAS REGAL 25YRS BLENDED SCOTCH WHISKY",
-  "8010":"BALLANTINE'S FINEST BLENDED SCOTCH WHISKY",
-  "8011":"BALLANTINE'S 17YRS BLENDED SCOTCH WHISKY",
-  "8012":"BALLANTINE'S 21YRS BLENDED SCOTCH WHISKY",
-  "8013":"GLENFIDDICH 12YRS SINGLE MALT SCOTCH WHISKY",
-  "8014":"GLENFIDDICH 15YRS SINGLE MALT SCOTCH WHISKY",
-  "8015":"GLENFIDDICH 18YRS SINGLE MALT SCOTCH WHISKY",
-  "8016":"GLENLIVET 12YRS SINGLE MALT SCOTCH WHISKY",
-  "8017":"GLENLIVET 15YRS SINGLE MALT SCOTCH WHISKY",
-  "8018":"GLENLIVET 18YRS SINGLE MALT SCOTCH WHISKY",
-  "8019":"JACK DANIEL'S OLD NO.7 TENNESSEE WHISKEY",
-  "8020":"JACK DANIEL'S GENTLEMAN JACK TENNESSEE WHISKEY",
-  "8021":"JACK DANIEL'S SINGLE BARREL TENNESSEE WHISKEY",
-  "8022":"ABSOLUT VODKA ORIGINAL",
-  "8023":"ABSOLUT VODKA CITRON",
-  "8024":"ABSOLUT VODKA RASPBERRY",
-  "8025":"GREY GOOSE VODKA",
-  "8026":"SMIRNOFF NO.21 TRIPLE DISTILLED VODKA",
-  "8027":"BACARDI CARTA BLANCA WHITE RUM",
-  "8028":"BACARDI CARTA NEGRA DARK RUM",
-  "8029":"BACARDI LIMON CITRUS RUM",
-  "8030":"CAPTAIN MORGAN SPICED RUM",
-  "8031":"BEEFEATER LONDON DRY GIN",
-  "8032":"BOMBAY SAPPHIRE LONDON DRY GIN",
-  "8033":"GORDON'S SPECIAL DRY LONDON GIN",
-  "8034":"TANQUERAY LONDON DRY GIN",
-  "8035":"MARTELL VS COGNAC",
-  "8036":"MARTELL VSOP COGNAC",
-  "8037":"HENNESSY VS COGNAC",
-  "8038":"HENNESSY VSOP PRIVILEGE COGNAC",
-  "8040":"REMY MARTIN VSOP COGNAC",
-  "8041":"REMY MARTIN XO COGNAC",
-  "8042":"DEWARS 12YRS BLENDED SCOTCH WHISKY",
-  "8043":"TEACHERS HIGHLAND CREAM BLENDED SCOTCH WHISKY",
-  "8044":"BELL'S ORIGINAL BLENDED SCOTCH WHISKY",
-  "8045":"WILLIAM GRANT'S FAMILY RESERVE BLENDED SCOTCH WHISKY",
-  "8046":"BLACK DOG TRIPLE GOLD RESERVE BLENDED SCOTCH WHISKY",
-  "8047":"100 PIPERS BLENDED SCOTCH WHISKY",
-  "8048":"THE FAMOUS GROUSE FINEST BLENDED SCOTCH WHISKY",
-  "8049":"HIGHLAND QUEEN BLENDED SCOTCH WHISKY",
-  "8050":"ANTIQUITY BLUE RARE BLENDED WHISKY",
-  "8051":"JAMESON IRISH WHISKEY",
-  "8052":"TULLAMORE D.E.W. IRISH WHISKEY",
-  "8053":"SOUTHERN COMFORT LIQUEUR",
-  "8054":"BAILEYS ORIGINAL IRISH CREAM",
-  "8055":"COINTREAU LIQUEUR",
-  "8056":"KAHLUA COFFEE LIQUEUR",
-  "8057":"MALIBU COCONUT RUM LIQUEUR",
-  "8058":"SAMBUCA ORIGINAL",
-  "8059":"JAGERMEISTER HERBAL LIQUEUR",
-  "8060":"BULLEIT BOURBON FRONTIER WHISKEY",
-  "8061":"MAKER'S MARK KENTUCKY BOURBON WHISKY",
-  "8062":"WOODFORD RESERVE KENTUCKY BOURBON WHISKY",
-  "8063":"WILD TURKEY 101 KENTUCKY BOURBON WHISKEY",
-  "8064":"JIM BEAM WHITE LABEL KENTUCKY BOURBON WHISKY",
-  "8065":"FOUR ROSES YELLOW LABEL KENTUCKY BOURBON WHISKY",
-  "8066":"LAPHROAIG 10YRS SINGLE MALT SCOTCH WHISKY",
-  "8067":"MACALLAN 12YRS SHERRY OAK SINGLE MALT SCOTCH WHISKY",
-  "8068":"MACALLAN 15YRS FINE OAK SINGLE MALT SCOTCH WHISKY",
-  "8069":"OBAN 14YRS SINGLE MALT SCOTCH WHISKY",
-  "8070":"DALMORE 12YRS SINGLE MALT SCOTCH WHISKY",
-  "8071":"TALISKER 10YRS SINGLE MALT SCOTCH WHISKY",
-  "8072":"HIGHLAND PARK 12YRS SINGLE MALT SCOTCH WHISKY",
-  "8073":"BOWMORE 12YRS SINGLE MALT SCOTCH WHISKY",
-  "8074":"BRUICHLADDICH CLASSIC LADDIE SCOTTISH BARLEY",
-  "8075":"ARDBEG 10YRS SINGLE MALT SCOTCH WHISKY",
-  "8076":"BUNNAHABHAIN 12YRS SINGLE MALT SCOTCH WHISKY",
-  "8077":"SPRINGBANK 10YRS CAMPBELTOWN SINGLE MALT SCOTCH WHISKY",
-  "8078":"JOHNNIE WALKER SWING BLENDED SCOTCH WHISKY",
-  "8079":"DIMPLE 12YRS BLENDED SCOTCH WHISKY",
-  "8080":"VAT 69 BLENDED SCOTCH WHISKY",
-  "8081":"WHITE HORSE FINE OLD BLENDED SCOTCH WHISKY",
-  "8082":"GRANT'S TRIPLE WOOD BLENDED SCOTCH WHISKY",
-  "8083":"PASSPORT SCOTCH BLENDED SCOTCH WHISKY",
-  "8084":"SOMETHING SPECIAL PREMIUM SCOTCH WHISKY",
-  "8085":"SCOTCH WHISKY 12 YEARS OLD BLENDED SCOTCH WHISKY",
-  "8086":"BLENDED SCOTCH WHISKY",
-  "8087":"SINGLE MALT SCOTCH WHISKY",
-  "8088":"VODKA IMPORTED",
-  "8089":"GIN IMPORTED",
-  "8090":"RUM IMPORTED",
-  "8091":"COGNAC VSOP",
-  "8092":"BRANDY IMPORTED",
-  "8093":"TEQUILA BLANCO",
-  "8094":"TEQUILA REPOSADO",
-  "8095":"JOSE CUERVO ESPECIAL TEQUILA",
-  "8096":"PATRON SILVER TEQUILA",
-  "8097":"DON JULIO BLANCO TEQUILA",
-  "8098":"JOHNNIE WALKER BLACK LABEL 12YRS BLENDED SCOTCH WHISKY",
-  "8121":"SCOTCH WHISKY 12 YEARS OLD BLENDED SCOTCH WHISKY",
-  "8122":"SCOTCH WHISKY 18 YEARS OLD BLENDED SCOTCH WHISKY",
-  "8123":"SINGLE MALT SCOTCH WHISKY 12 YEARS OLD",
-  "8124":"IMPORTED BLENDED SCOTCH WHISKY",
-  "8125":"IMPORTED PREMIUM SCOTCH WHISKY",
-  "8099":"CHIVAS REGAL 12YRS PREMIUM BLENDED SCOTCH WHISKY",
-  "8100":"BALLANTINE'S FINEST SCOTCH WHISKY",
-  "8150":"GLENFIDDICH 12YRS SINGLE MALT SCOTCH WHISKY",
-  "8189":"CHIVAS REGAL 12YRS BLENDED SCOTCH WHISKY",
-  "8200":"BLACK & WHITE BLENDED SCOTCH WHISKY",
-  "8201":"JOHNNIE WALKER RED LABEL SCOTCH WHISKY",
-  "8202":"GRANTS TRIPLE WOOD SCOTCH WHISKY",
-  "8203":"TEACHER'S SCOTCH WHISKY",
-  "8204":"VAT 69 SCOTCH WHISKY",
-  "8205":"WILLIAM LAWSON'S BLENDED SCOTCH WHISKY",
-  "8300":"BACARDI SUPERIOR WHITE RUM",
-  "8301":"CAPTAIN MORGAN ORIGINAL SPICED RUM",
-  "8400":"GORDON'S GIN LONDON DRY",
-  "8401":"BOMBAY SAPPHIRE PREMIUM LONDON DRY GIN",
-  "8500":"GREY GOOSE PREMIUM FRENCH VODKA",
-  "8501":"ABSOLUT BLUE SWEDISH VODKA",
-  "8600":"HENNESSY VS COGNAC",
-  "8601":"MARTELL VS COGNAC",
-  "9001":"IMPORTED PREMIUM SCOTCH WHISKY",
-  "9002":"IMPORTED BLENDED SCOTCH WHISKY",
-  "9003":"BLENDED SCOTCH WHISKY 12 YEARS OLD",
-  "9080":"BLENDED SCOTCH WHISKY PREMIUM",
-  "9081":"BLENDED SCOTCH WHISKY 12 YEARS",
-  "9082":"BLENDED SCOTCH WHISKY 12 YEARS OLD",
-  "9083":"BLENDED SCOTCH WHISKY 15 YEARS OLD",
-  "9084":"BLENDED SCOTCH WHISKY 18 YEARS OLD",
-  "9085":"BLENDED SCOTCH WHISKY SPECIAL RESERVE",
-  "9086":"SINGLE MALT SCOTCH WHISKY",
-  "9090":"IMPORTED SCOTCH WHISKY"
+  "1653": "JOHNNIE WALKER BLONDE BLENDED SCOTCH WHISKY",
+  "3753": "JACOBS CREEK CLASSIC SHIRAZ CABERNET",
+  "8006": "ABSOLUT VODKA",                     // confirmed by user
+  "8098": "JOHNNIE WALKER BLACK LABEL BLENDED SCOTCH WHISKY",
+  "8121": "J AND B RARE BLENDED SCOTCH WHISKY",
+  "8189": "BACARDI GOLD CRANBERRY FLAVOURED",
+  "9099": "JOHNNIE WALKER RED LABEL BLENDED SCOTCH WHISKY"
 };
 
-// Lookup Duty Paid brand name by code
 function getDPBrandName(code){
   const c = String(code||'').replace(/^0+/,'').trim();
   return DP_BRAND_NAMES[c] || null;
@@ -7836,8 +7949,7 @@ function getPriceData(brandNum, sizeML) {
   // Collect all entries for this brand
   const entries = Object.entries(TSBCL_PRICE_DATA).filter(([k]) => k.startsWith(bn + '_'));
   if(!entries.length){
-    // Fallback: check Duty Paid brand table for 8xxx codes
-    const dpName = (typeof getDPBrandName === 'function') ? getDPBrandName(bn) : null;
+    const dpName = getDPBrandName(bn);
     if(dpName) return [0, 0, 0, 12, 750, 'QQ', dpName, 'G'];
     return null;
   }
