@@ -2912,22 +2912,26 @@ function repairStockNames(){
     const code4 = bnumCode || nameCode;
     if(!code4) return;
 
-    // Step 3: Look up official name from TSBCL/DP database
-    const pd = getPriceData(code4, s.sizeML || 0);
-    if(!pd || !pd[6] || pd[6].length < 3) return;
-    const officialName = pd[6];
+    // Step 3: Look up official name — check TSBCL first, then DP_PRICE_DATA
+    const pd       = getPriceData(code4, s.sizeML || 0);
+    const dpPd     = (!pd && typeof getDPPriceData==='function') ? getDPPriceData(code4, s.sizeML||0) : null;
+    const bestPd   = pd || dpPd;
+    if(!bestPd || !bestPd[6] || bestPd[6].length < 3) return;
+    const officialName = bestPd[6];
+    const isDP = !!dpPd; // came from Duty Paid table
 
-    // Step 4: Replace stored name if:
-    // (a) stored name is clearly bad (code-only / descriptor), OR
-    // (b) this code is in DP_BRAND_NAMES — those are verified from real PDFs
-    //     and always override anything stored (fixes old wrong DP guesses)
+    // Step 4: Always replace if:
+    // (a) stored name is clearly bad (code-only / descriptor)
+    // (b) entry is in DP_PRICE_DATA — always trust official XLS over anything stored
+    // (c) official name differs from stored name (catches old fabricated DP guesses)
     const storedName = (s.name||'').trim();
     const storedIsBad = storedName.length < 3
       || /^\d{4}(\s*\(\d+\))?\s*$/.test(storedName)
       || /^(IML|Beer|Duty\s*Paid)\s+\d/i.test(storedName)
       || /^(BLENDED|SCOTCH|MALT|GRAIN|VATTED|PREMIUM|WHISKY|VODKA|BRANDY|RUM|BEER|STRONG|LAGER|RESERVE|CLASSIC|SELECT|DELUXE|SPECIAL|ULTRA|SUPERIOR|ORIGINAL|FLAVOU|CITRUS|CRANBERRY|ORANGE|APPLE|LIME|MINT)/i.test(storedName);
-    const isVerifiedDP = (typeof DP_PRICE_DATA !== 'undefined' && Object.keys(DP_PRICE_DATA).some(k=>k.startsWith(code4+'_')));
-    if(storedIsBad || isVerifiedDP){
+    // For DP brands: always overwrite — official XLS is authoritative
+    // For Local brands: only overwrite if stored name is bad
+    if(storedIsBad || isDP){
       s.name = officialName;
       if(!/^\d{4}/.test((s.bnum||'').trim())) s.bnum = code4;
       changed = true;
