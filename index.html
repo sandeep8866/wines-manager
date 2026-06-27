@@ -419,14 +419,17 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <!-- ── Current Stock Tab ── -->
   <div id="stk-panel-current">
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px">
-    <div class="pills" id="stock-pills" style="margin:0;flex:1">
+    <div class="pills" id="stock-pills" style="margin:0">
       <button class="pill active" onclick="filterStock('all',this)">All</button>
       <button class="pill" onclick="filterStock('IML',this)">IML/IMFL</button>
       <button class="pill" onclick="filterStock('Beer',this)">Beer</button>
       <button class="pill" onclick="filterStock('Duty Paid',this)">Duty Paid</button>
     </div>
-    <button class="btn btn-xs" style="white-space:nowrap" onclick="showBrandAudit()">🔍 Audit Brand Names</button>
-    <button class="btn btn-xs btn-gold" style="white-space:nowrap" onclick="manualRepair()">🔧 Fix Brand Names</button>
+    <input id="stock-search" class="fc" type="search" placeholder="🔍 Search brand…"
+      style="flex:1;min-width:140px;max-width:260px;padding:5px 10px;font-size:.8rem"
+      oninput="filterStockSearch(this.value)">
+    <button class="btn btn-xs" style="white-space:nowrap" onclick="showBrandAudit()">🔍 Audit</button>
+    <button class="btn btn-xs btn-gold" style="white-space:nowrap" onclick="manualRepair()">🔧 Fix Names</button>
     </div>
     <div id="brand-audit-panel" style="display:none;margin:8px 0;background:var(--card);border-radius:10px;padding:12px;font-size:.78rem;max-height:400px;overflow-y:auto"></div>
     <div class="tbl-wrap" style="margin-bottom:12px">
@@ -2771,6 +2774,13 @@ function switchStockTab(tab, btn){
 }
 
 let stockFilter = 'all';
+let stockSearch  = '';
+
+function filterStockSearch(q){
+  stockSearch = (q||'').trim().toLowerCase();
+  renderStockTable();
+}
+
 function filterStock(f, btn){
   stockFilter=f;
   document.querySelectorAll('#stock-pills .pill').forEach(p=>p.classList.remove('active'));
@@ -2901,87 +2911,87 @@ function showBrandAudit(){
 
 // ── Repair bad brand names already stored in stock using TSBCL lookup ──────────
 function repairStockNames(){
-  // Run across ALL stores, not just current store CS
   const storeIds = getStoreIds();
-  const prevCS = CS;
-  let totalChanged = 0;
+  const prevCS   = CS;
+  let totalFixed = 0;
+
   storeIds.forEach(sid => {
     CS = sid;
-    _repairStoreNames();
+    const stock   = getStock();
+    const bills   = ga('bills');
+    let   changed = false;
+
+    // Build set of brand codes that appear in real bills
+    const billedCodes = new Set();
+    bills.forEach(b => (b.items||[]).forEach(it => {
+      const c = (it.brandNum||'').match(/^(\d{4})/)?.[1] || '';
+      if(c) billedCodes.add(c);
+    }));
+
+    Object.values(stock).forEach(s => {
+      const nm = (s.name||'').trim();
+
+      // Step 1: Strip trailing 4-digit suffix e.g. "SPICYMINT VIVID FLAVOURED 2129"
+      const nmCleaned = nm.replace(/\s+\d{4,}\s*$/, '').trim();
+      if(nmCleaned !== nm && nmCleaned.length > 3){ s.name = nmCleaned; changed = true; }
+
+      // Step 2: Extract brand code from bnum only (never from inside real brand names)
+      const code4 = (s.bnum||'').match(/^(\d{4})/)?.[1]
+                 || nm.match(/^(?:IML|Beer|Duty\s*Paid)\s+(\d{4})/i)?.[1]
+                 || nm.match(/^(\d{4})\s*(?:\(\d+\))?\s*$/)?.[1] || '';
+      if(!code4) return;
+
+      // Step 3: Look up official name — TSBCL Local first, then DP_PRICE_DATA
+      let bestPd = null, isDP = false;
+      try { bestPd = getPriceData(code4, s.sizeML||0); } catch(e){}
+      if(!bestPd && typeof getDPPriceData === 'function'){
+        try { bestPd = getDPPriceData(code4, s.sizeML||0); isDP = true; } catch(e){}
+      }
+      if(!bestPd || !bestPd[6] || bestPd[6].length < 3) return;
+      const officialName = bestPd[6];
+
+      // Step 4: Replace stored name if bad OR if it's a DP brand (always trust XLS)
+      const storedName = (s.name||'').trim();
+      const storedIsBad = storedName.length < 3
+        || /^\d{4}(\s*\(\d+\))?\s*$/.test(storedName)
+        || /^(IML|Beer|Duty\s*Paid)\s+\d/i.test(storedName)
+        || /^(BLENDED|SCOTCH|MALT|GRAIN|VATTED|PREMIUM|WHISKY|VODKA|BRANDY|RUM|BEER|STRONG|LAGER|RESERVE|CLASSIC|SELECT|DELUXE|SPECIAL|ULTRA|SUPERIOR|ORIGINAL|FLAVOU|CITRUS|CRANBERRY|ORANGE|APPLE|LIME|MINT)/i.test(storedName);
+
+      if(storedIsBad || isDP){
+        s.name = officialName;
+        if(!/^\d{4}/.test((s.bnum||'').trim())) s.bnum = code4;
+        changed = true;
+        totalFixed++;
+      }
+    });
+
+    // Remove phantom stock entries with no real bills
+    Object.entries(stock).forEach(([id, s]) => {
+      const c = (s.bnum||'').match(/^(\d{4})/)?.[1] || '';
+      if(c && !billedCodes.has(c) && !(s.purchased||0) && !(s.opening||0)){
+        delete stock[id]; changed = true;
+      }
+    });
+
+    if(changed) setStock(stock);
   });
+
   CS = prevCS;
-  if(totalChanged > 0){ renderStockTable(); renderMRPTable(); }
-  return totalChanged;
+  return totalFixed;
 }
 
-function _repairStoreNames(){
-  const stock = getStock();
-  let changed = false;
-  Object.values(stock).forEach(s => {
-    const nm = (s.name||'').trim();
-
-    // Step 1: Strip trailing 4-digit suffix e.g. "SPICYMINT VIVID FLAVOURED 2129"
-    const nmCleaned = nm.replace(/\s+\d{4,}\s*$/, '').trim();
-    if(nmCleaned !== nm && nmCleaned.length > 3){ s.name = nmCleaned; changed = true; }
-
-    // Step 2: Extract brand code — ONLY from bnum field, or from names that are
-    // explicitly in code-style format like "IML 1307" or "1307 (24)".
-    // Never extract from middle of a real brand name (avoids false matches like
-    // "KINGFISHER 650ml" → 6500, or "WHISKY 8006" → JW Green Label).
-    const bnumCode = (s.bnum||'').match(/^(\d{4})/)?.[1] || '';
-    const nameCode = nm.match(/^(?:IML|Beer|Duty\s*Paid)\s+(\d{4})/i)?.[1]
-                  || nm.match(/^(\d{4})\s*(?:\(\d+\))?\s*$/)?.[1] || '';
-    const code4 = bnumCode || nameCode;
-    if(!code4) return;
-
-    // Step 3: Look up official name — check TSBCL first, then DP_PRICE_DATA
-    const pd       = getPriceData(code4, s.sizeML || 0);
-    const dpPd     = (!pd && typeof getDPPriceData==='function') ? getDPPriceData(code4, s.sizeML||0) : null;
-    const bestPd   = pd || dpPd;
-    if(!bestPd || !bestPd[6] || bestPd[6].length < 3) return;
-    const officialName = bestPd[6];
-    const isDP = !!dpPd; // came from Duty Paid table
-
-    // Step 4: Always replace if:
-    // (a) stored name is clearly bad (code-only / descriptor)
-    // (b) entry is in DP_PRICE_DATA — always trust official XLS over anything stored
-    // (c) official name differs from stored name (catches old fabricated DP guesses)
-    const storedName = (s.name||'').trim();
-    const storedIsBad = storedName.length < 3
-      || /^\d{4}(\s*\(\d+\))?\s*$/.test(storedName)
-      || /^(IML|Beer|Duty\s*Paid)\s+\d/i.test(storedName)
-      || /^(BLENDED|SCOTCH|MALT|GRAIN|VATTED|PREMIUM|WHISKY|VODKA|BRANDY|RUM|BEER|STRONG|LAGER|RESERVE|CLASSIC|SELECT|DELUXE|SPECIAL|ULTRA|SUPERIOR|ORIGINAL|FLAVOU|CITRUS|CRANBERRY|ORANGE|APPLE|LIME|MINT)/i.test(storedName);
-    // For DP brands: always overwrite — official XLS is authoritative
-    // For Local brands: only overwrite if stored name is bad
-    if(storedIsBad || isDP){
-      s.name = officialName;
-      if(!/^\d{4}/.test((s.bnum||'').trim())) s.bnum = code4;
-      changed = true;
-    }
-  });
-  // Remove phantom stock entries: DP/TSBCL entries that have no bills backing
-  // them (purchased=0, opening=0, closing=0) — these were created by the old
-  // overly-aggressive repairStockNames logic and have no real data.
-  const bills = ga('bills');
-  const billedCodes = new Set();
-  bills.forEach(b=>(b.items||[]).forEach(it=>{
-    const c = (it.brandNum||'').match(/^(\d{4})/)?.[1]
-           || (it.brandName||'').match(/^(?:IML|Beer|Duty\s*Paid)\s+(\d{4})\b/i)?.[1] || '';
-    if(c) billedCodes.add(c);
-  }));
-  Object.entries(stock).forEach(([id,s])=>{
-    const c = (s.bnum||'').match(/^(\d{4})/)?.[1] || '';
-    const isPhantom = c && !billedCodes.has(c)
-      && (s.purchased||0) === 0 && (s.opening||0) === 0;
-    if(isPhantom){ delete stock[id]; changed = true; }
-  });
-
-  if(changed){ setStock(stock); totalChanged++; }
-}
 
 function renderStockTable(){
   const stock = getStock();
-  const items = Object.values(stock).filter(s=>stockFilter==='all'||s.ptype===stockFilter);
+  const items = Object.values(stock).filter(s=>{
+    if(stockFilter!=='all' && s.ptype!==stockFilter) return false;
+    if(stockSearch){
+      const nm = cleanBrandName(s.name,s.bnum).toLowerCase();
+      const bn = (s.bnum||'').toLowerCase();
+      if(!nm.includes(stockSearch) && !bn.includes(stockSearch)) return false;
+    }
+    return true;
+  });
   const tbody = document.getElementById('stock-tbody');
   if(!items.length){
     tbody.innerHTML = `<tr><td colspan="9"><div class="empty"><div class="empty-ic">📦</div>No items yet</div></td></tr>`;
