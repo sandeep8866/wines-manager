@@ -426,6 +426,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
       <button class="pill" onclick="filterStock('Duty Paid',this)">Duty Paid</button>
     </div>
     <button class="btn btn-xs" style="white-space:nowrap" onclick="showBrandAudit()">🔍 Audit Brand Names</button>
+    <button class="btn btn-xs btn-gold" style="white-space:nowrap" onclick="manualRepair()">🔧 Fix Brand Names</button>
     </div>
     <div id="brand-audit-panel" style="display:none;margin:8px 0;background:var(--card);border-radius:10px;padding:12px;font-size:.78rem;max-height:400px;overflow-y:auto"></div>
     <div class="tbl-wrap" style="margin-bottom:12px">
@@ -2804,6 +2805,13 @@ function showPdfDebug(){
   panel.style.display = 'block';
 }
 
+function manualRepair(){
+  const n = repairStockNames();
+  renderStockTable();
+  renderMRPTable();
+  toast(n > 0 ? '✅ Brand names fixed across all stores' : 'ℹ️ No changes needed — all names already correct');
+}
+
 function auditRenameBrand(stockId){
   const inp = document.getElementById('audit-rename-'+stockId);
   const newName = (inp?.value||'').trim();
@@ -2893,6 +2901,20 @@ function showBrandAudit(){
 
 // ── Repair bad brand names already stored in stock using TSBCL lookup ──────────
 function repairStockNames(){
+  // Run across ALL stores, not just current store CS
+  const storeIds = getStoreIds();
+  const prevCS = CS;
+  let totalChanged = 0;
+  storeIds.forEach(sid => {
+    CS = sid;
+    _repairStoreNames();
+  });
+  CS = prevCS;
+  if(totalChanged > 0){ renderStockTable(); renderMRPTable(); }
+  return totalChanged;
+}
+
+function _repairStoreNames(){
   const stock = getStock();
   let changed = false;
   Object.values(stock).forEach(s => {
@@ -2954,7 +2976,7 @@ function repairStockNames(){
     if(isPhantom){ delete stock[id]; changed = true; }
   });
 
-  if(changed) setStock(stock);
+  if(changed){ setStock(stock); totalChanged++; }
 }
 
 function renderStockTable(){
