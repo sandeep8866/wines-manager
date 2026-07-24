@@ -244,6 +244,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div class="sp-logo">🥃</div>
   <div class="sp-title">Wines Manager</div>
   <div class="sp-sub">Telangana Excise · ICDC Bills</div>
+  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v2026.07.24.0443 · 24 Jul 2026 04:43 UTC</div>
   <div class="sp-bar"><div class="sp-fill"></div></div>
 </div>
 
@@ -252,6 +253,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div id="store-btns" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
   <div id="store-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
   <div id="topbar-date"></div>
+  <div title="Build: 24 Jul 2026 04:43 UTC" style="font-size:.6rem;color:rgba(255,255,255,.4);margin-left:6px;cursor:default;white-space:nowrap">v2026.07.24.0443</div>
 </div>
 
 <!-- MAIN -->
@@ -1016,6 +1018,8 @@ const STORE_INFO = loadStoreInfo();
 // Safe STORE_INFO accessor — handles both numeric and string keys
 function SI(id){ return STORE_INFO[id] || STORE_INFO[String(id)] || STORE_INFO[Number(id)] || {name:'Store '+id,short:'Store '+id,code:'',lic:''}; }
 
+const APP_VERSION = 'v2026.07.24.0443';
+const APP_BUILD   = '2026-07-24 04:43 UTC';
 let CS = getStoreIds()[0]; // current store — first store by default
 let mnRowCount = 1;
 let currentRpt = 'brandwise';
