@@ -318,6 +318,9 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
     </div>
     <input type="file" id="pfinput" accept=".pdf" multiple style="display:none"
            onchange="handlePDFs(this)">
+    <div style="font-size:.65rem;color:var(--t3);margin-top:4px;text-align:center">
+      💡 Tip: The browser remembers the last folder you selected here separately from the Price List upload
+    </div>
     <div id="pdf-status" style="margin-top:8px"></div>
     <div style="margin-top:6px;text-align:right">
       <button class="btn btn-xs" onclick="showPdfDebug()" style="color:var(--t3);font-size:.7rem">🔬 Debug last PDF lines</button>
@@ -1574,8 +1577,8 @@ function renderBillQueue(){
 }
 
 function renderQueueCard(r, idx){
-  const statusIcon  = {ready:'✅', duplicate:'⚠️', error:'❌', processing:'⏳'}[r.status];
-  const statusColor = {ready:'var(--green)', duplicate:'#e67e22', error:'var(--red)', processing:'var(--t2)'}[r.status];
+  const statusIcon  = {ready:'✅', 'ready-replace':'🔄', duplicate:'⚠️', error:'❌', processing:'⏳'}[r.status] || '⏳';
+  const statusColor = {ready:'var(--green)', 'ready-replace':'var(--blue,#4a90d9)', duplicate:'#e67e22', error:'var(--red)', processing:'var(--t2)'}[r.status] || 'var(--t2)';
   const bill        = r.bill;
   const sNum        = r.storeNum;
   // Use color rotation for any number of stores
@@ -1616,8 +1619,14 @@ function renderQueueCard(r, idx){
         🏪 ${esc(storeName)}
       </div>
 
-      ${r.status==='duplicate' ? `<div class="alert alert-warn" style="margin:4px 0 0;font-size:.72rem">
-        ⚠️ ${esc(r.error)} — <strong>Skipped</strong>
+      ${r.status==='duplicate' ? `<div class="alert alert-warn" style="margin:6px 0 0;padding:8px 10px;font-size:.72rem">
+        <div style="margin-bottom:6px">⚠️ ${esc(r.error)}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-xs" style="background:var(--green);color:#fff;border:none"
+            onclick="resolveDuplicate(${idx},'new')">📥 Save New (replace old)</button>
+          <button class="btn btn-xs" style="background:var(--t3);color:#fff;border:none"
+            onclick="resolveDuplicate(${idx},'old')">📂 Keep Old (skip this)</button>
+        </div>
       </div>` : ''}
 
       ${r.status==='error' ? `<div class="alert alert-warn" style="margin:4px 0 0;font-size:.72rem">
@@ -1633,6 +1642,18 @@ function renderQueueCard(r, idx){
             <input class="fc" type="text" id="qi-${idx}" value="${bill.icdc||''}">
           </div>
         </div>
+        ${(()=>{
+          const pdfTotal = bill.totalCases || 0;
+          const itemSum  = (bill.items||[]).reduce((a,it)=>a+(it.casesDel||0),0);
+          const btlSum   = (bill.items||[]).reduce((a,it)=>a+(it.btlsDel||0),0);
+          const match    = !pdfTotal || Math.abs(pdfTotal - itemSum) <= 1;
+          return pdfTotal
+            ? `<div style="font-size:.7rem;margin:4px 0;padding:4px 8px;border-radius:6px;background:${match?'rgba(39,174,96,.08)':'rgba(220,50,50,.08)'};color:${match?'var(--green)':'var(--red)'}">
+                📦 Cases: <strong>${itemSum}</strong> (items) ${match?'✅ matches':'⚠️ mismatch — '} PDF total <strong>${pdfTotal}</strong>
+                ${btlSum?` · Btls: ${btlSum}`:''}
+              </div>`
+            : `<div style="font-size:.7rem;color:var(--t3);margin:4px 0">📦 Items: ${itemSum} cases parsed</div>`;
+        })()}
         <details>
           <summary style="font-size:.75rem;color:var(--t2);cursor:pointer;user-select:none">
             View / Edit ${bill.items.length} line items
@@ -1665,6 +1686,21 @@ function renderQueueCard(r, idx){
     </div>`;
 }
 
+function resolveDuplicate(idx, choice){
+  const r = billQueue[idx];
+  if(!r || r.status !== 'duplicate') return;
+  if(choice === 'new'){
+    // Mark as ready-replace so saveAllReady handles it
+    r.status = 'ready-replace';
+    toast('✅ Will replace old bill when you click Save');
+  } else {
+    // Remove from queue entirely
+    billQueue.splice(idx, 1);
+    toast('📂 Keeping existing bill — removed from queue');
+  }
+  renderBillQueue();
+}
+
 function removeQueueItem(qIdx, iIdx){
   billQueue[qIdx].bill.items.splice(iIdx, 1);
   if(billQueue[qIdx].bill.items.length === 0) billQueue[qIdx].status = 'error';
@@ -1686,7 +1722,7 @@ async function saveAllReady(){
 
   for(let idx=0; idx<billQueue.length; idx++){
     const r = billQueue[idx];
-    if(r.status !== 'ready') continue;
+    if(r.status !== 'ready' && r.status !== 'ready-replace') continue;
 
     // Collect editable field values
     const date  = document.getElementById(`qd-${idx}`)?.value || r.bill.date || today();
@@ -1711,6 +1747,11 @@ async function saveAllReady(){
     CS = targetStore; // temporarily switch for ga/sa helpers
 
     const bills = ga('bills');
+    // If replacing a duplicate, remove the old bill first
+    if(r.status === 'ready-replace' && icdc){
+      const oldIdx = bills.findIndex(b => b.icdc === icdc);
+      if(oldIdx !== -1) bills.splice(oldIdx, 1);
+    }
     bills.push({
       id: Date.now() + idx,
       date, icdc,
@@ -2288,7 +2329,10 @@ function parseICDCItemsFallback(lines){
   }
   const fullText = joinedLines.join('\n')
     // Normalize fused tokens from PDF cell extraction (pages 2-3 of this bill format)
-    .replace(/\bml(\d)/gi, 'ml $1')                       // "ml10"       → "ml 10"
+    // Fused qty after pack size: "ml10" means "1 case 0 btls", "ml200" means "20 cases 0 btls"
+    // Split by inserting space before last digit(s) that are 0 (btls count)
+    .replace(/\bml(\d{1,2})(0)\b/gi, (_, c, b) => `ml ${c} ${b}`) // "ml10"→"ml 1 0", "ml200"→"ml 20 0"
+    .replace(/\bml(\d)/gi, 'ml $1')                       // "ml3"→"ml 3" (non-zero btls)
     .replace(/\bIML([GPC])\b/g, 'IML $1')                 // "IMLG"       → "IML G"
     .replace(/\bIML([GPC])(?=\s*\d)/g, 'IML $1')         // "IMLG12"     → "IML G 12"
     .replace(/\bDuty\s*Paid([GPC])\b/gi, 'Duty Paid $1') // "DutyPaidG"  → "Duty Paid G"
@@ -2624,19 +2668,18 @@ function parseICDCHeader(text, rawText){
   // Professional Tax
   bill.profTax     = money(/[Pp]rofessional\s*[Tt]ax[:\s]*([\d,]+\.?\d*)/);
 
-  // Amount Credited — "Retailer Credit Balance: Rs.985.32" or "Amount Credited: X"
-  bill.amtCredited =
-    money(/[Rr]etailer\s*[Cc]redit\s*[Bb]alance[^:]*:?\s*Rs\.?\s*([\d,]+\.?\d*)/) ||
-    money(/[Cc]redit\s*[Bb]alance[^:]*:?\s*Rs\.?\s*([\d,]+\.?\d*)/) ||
-    money(/[Aa]mount\s*[Cc]redited[^:]*:?\s*Rs\.?\s*([\d,]+\.?\d*)/);
-
-  // e-Challan reference number "No.e-challan/DD:1" or "No.e-challan/DD:1.6503..."
+  // e-Challan reference number
   const eChallanRefM = text.match(/No\.e-challan\/DD[:\s]*([\w\.]+)/i);
   if(eChallanRefM) bill.eChallanRef = eChallanRefM[1].trim();
 
-  // Retailer Credit Balance (the closing balance shown at bill bottom)
+  // Credit Balance — "Retailer Credit Balance: Rs.91,692.39"
+  // This is what remains after: subTotal - netInvoice - exciseCess - tcs - profTax
   const creditBalM = text.match(/Retailer\s*Credit\s*Balance[^:]*:\s*Rs\.?\s*([\d,]+\.?\d*)/i);
-  if(creditBalM) bill.creditBalance = parseFloat(creditBalM[1].replace(/,/g,''));
+  bill.creditBalance = creditBalM
+    ? parseFloat(creditBalM[1].replace(/,/g,''))
+    : (bill.subTotal - bill.netInvoice - bill.exciseCess - bill.tcs - bill.profTax) || 0;
+  // amtCredited = creditBalance (kept for backward compat with credit chain logic)
+  bill.amtCredited = bill.creditBalance;
 
   // Total Cases & Bottles Delivered — last pair in "Total (Cases/Btls):" line
   // Format: "Total (Cases/Btls): IMFL_cases / IMFL_btls Beer_cases / Beer_btls TOTAL_cases / TOTAL_btls"
@@ -3668,8 +3711,9 @@ async function repairFromPDFs(input){
         exciseCess:   bill.exciseCess   || 0,
         tcs:          bill.tcs          || 0,
         profTax:      bill.profTax      || 0,
-        amtCredited:  bill.amtCredited  || 0,
-        totalCases:   bill.totalCases   || 0,
+        amtCredited:   bill.amtCredited  || 0,
+        creditBalance: bill.creditBalance || bill.amtCredited || 0,
+        totalCases:    bill.totalCases   || 0,
         totalBtls:    bill.totalBtls    || 0,
       });
       sa('bills', bills);
@@ -4795,7 +4839,7 @@ function rptFinancials(bills, from, to){
     'Excise Cess':   b.exciseCess||0,
     'TCS':           b.tcs||0,
     'Prof Tax':      b.profTax||0,
-    'Amt Credited':  b.amtCredited||0,
+    'Credit Balance': b.creditBalance||b.amtCredited||0,
   }));
 
   const warningHtml = warnings.length ? `
@@ -4861,13 +4905,14 @@ function rptFinancials(bills, from, to){
           <th class="num">Excise Cess</th>
           <th class="num">TCS</th>
           <th class="num">Prof Tax</th>
-          <th class="num" style="color:var(--green)">Amt Credited</th>
+          <th class="num" style="color:var(--green)">Credit Balance</th>
           <th class="num" style="color:var(--red)">Chain ⚠</th>
         </tr></thead>
         <tbody>
           ${sorted.map((b,idx)=>{
-            const cases = (b.items||[]).reduce((a,it)=>a+(it.casesDel||0),0);
-            const btls  = (b.items||[]).reduce((a,it)=>a+(it.btlsDel||0),0);
+            // Prefer totalCases from PDF summary row; fall back to summing items
+            const cases = b.totalCases || (b.items||[]).reduce((a,it)=>a+(it.casesDel||0),0);
+            const btls  = b.totalBtls  || (b.items||[]).reduce((a,it)=>a+(it.btlsDel||0),0);
             // Check if this bill has a mismatch with previous bill's amtCredited
             const sameSore = sorted.filter(x=>(x._store||CS)===(b._store||CS));
             const myIdx = sameSore.indexOf(b);
@@ -4888,7 +4933,7 @@ function rptFinancials(bills, from, to){
             <td class="num">${fmtV(b.exciseCess)}</td>
             <td class="num">${fmtV(b.tcs)}</td>
             <td class="num">${fmtV(b.profTax)}</td>
-            <td class="num" style="font-weight:700;color:var(--green)">${fmtV(b.amtCredited)}</td>
+            <td class="num" style="font-weight:700;color:var(--green)">${fmtV(b.creditBalance||b.amtCredited)}</td>
             <td class="num">${mismatch?`<span style="color:var(--red);font-size:.7rem" title="Prev bill credited ${fmtR(prev.amtCredited||0)} but this bill shows ${fmtR(b.prevCredit||0)}">⚠️</span>`:'✅'}</td>
           </tr>`;}).join('')}
           <tr style="font-weight:700;background:var(--s3)">
@@ -4904,7 +4949,7 @@ function rptFinancials(bills, from, to){
             <td class="num">${fmtR(T('exciseCess'))}</td>
             <td class="num">${fmtR(T('tcs'))}</td>
             <td class="num">${fmtR(T('profTax'))}</td>
-            <td class="num" style="color:var(--green)">${fmtR(T('amtCredited'))}</td>
+            <td class="num" style="color:var(--green)">${fmtR(sorted.reduce((a,b)=>a+(b.creditBalance||b.amtCredited||0),0))}</td>
             <td class="num">${warnings.length ? `<span style="color:var(--red)">${warnings.length} ⚠️</span>` : '✅'}</td>
           </tr>
         </tbody>
@@ -4922,7 +4967,7 @@ function rptFinancials(bills, from, to){
           <b>Excise Cess</b> — Special Excise Cess charged<br>
           <b>TCS</b> — Tax Collected at Source<br>
           <b>Prof Tax</b> — New Retailer Professional Tax<br>
-          <b>Amt Credited</b> — Balance credited to your account after all deductions
+          <b>Credit Balance</b> — Your remaining balance after invoice, excise cess and TCS deductions
         </div>
       </div>
     </div>
