@@ -244,7 +244,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div class="sp-logo">🥃</div>
   <div class="sp-title">Wines Manager</div>
   <div class="sp-sub">Telangana Excise · ICDC Bills</div>
-  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v2026.07.24.0443 · 24 Jul 2026 04:43 UTC</div>
+  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v2026.07.24.0501 · 24 Jul 2026 05:01 UTC</div>
   <div class="sp-bar"><div class="sp-fill"></div></div>
 </div>
 
@@ -253,7 +253,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div id="store-btns" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
   <div id="store-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
   <div id="topbar-date"></div>
-  <div title="Build: 24 Jul 2026 04:43 UTC" style="font-size:.6rem;color:rgba(255,255,255,.4);margin-left:6px;cursor:default;white-space:nowrap">v2026.07.24.0443</div>
+  <div title="24 Jul 2026 05:01 UTC" style="font-size:.62rem;color:rgba(255,255,255,.65);margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,255,255,.1);padding:1px 5px;border-radius:4px">v2026.07.24.0501</div>
 </div>
 
 <!-- MAIN -->
@@ -1018,8 +1018,8 @@ const STORE_INFO = loadStoreInfo();
 // Safe STORE_INFO accessor — handles both numeric and string keys
 function SI(id){ return STORE_INFO[id] || STORE_INFO[String(id)] || STORE_INFO[Number(id)] || {name:'Store '+id,short:'Store '+id,code:'',lic:''}; }
 
-const APP_VERSION = 'v2026.07.24.0443';
-const APP_BUILD   = '2026-07-24 04:43 UTC';
+const APP_VERSION = 'v2026.07.24.0501';
+const APP_BUILD   = '24 Jul 2026 05:01 UTC';
 let CS = getStoreIds()[0]; // current store — first store by default
 let mnRowCount = 1;
 let currentRpt = 'brandwise';
@@ -2277,23 +2277,37 @@ function extractItemRows(rows){
       }
     }
 
-    // Total = rightmost proper Indian-format number (N,NNN.NN)
-    // In 30-Nov compressed bills, total may appear as "7,204.007,204.00" (rate+total merged).
-    // We extract ALL Indian-format numbers from all cells and take the LAST one.
-    // Require at least 4 digits total (e.g. "1,601" is ok, "101" is not)
-    // but prefer numbers > 1000 (invoice line totals are always > per-bottle rate).
+    // Extract all monetary values from all cells
+    // Rate cell format: "10,804.00 /225.08" or "10,804.00 / 225.08"
+    // btlRate is the small number after the slash; total is the largest value
     const indianNumRe = /\d[\d,]*,\d{3}(?:\.\d{1,2})?/g;
-    let allTotals = [];
+    const smallNumRe  = /(?<=\/\s*)(\d+\.\d{1,2})/g; // number after slash = btlRate
+    let allTotals = [], allSmall = [];
     for(const c of sortedCells){
+      // Extract btlRate from "caseRate /btlRate" pattern
+      const slashMatches = [...c.str.matchAll(/\/\s*(\d{1,4}\.\d{1,2})/g)];
+      for(const m of slashMatches){
+        const v = parseFloat(m[1]);
+        if(v > 0 && v < 5000) allSmall.push(v); // btl rates are always < 5000
+      }
+      // Extract all Indian-format numbers
       const matches = [...c.str.matchAll(indianNumRe)];
       for(const m of matches){
         const v = parseFloat(m[0].replace(/,/g,''));
         if(v > 0) allTotals.push(v);
       }
     }
+    // btlRate = the slash-extracted small number (most reliable)
+    // unitRate fallback = second-largest value if no slash number found
+    if(allSmall.length > 0) unitRate = allSmall[allSmall.length - 1];
     // Take the LARGEST value as the total (invoice line total > per-case rate)
     if(allTotals.length > 0){
       total = Math.max(...allTotals);
+      // If no slash-extracted btlRate, use second-largest as unitRate
+      if(!unitRate && allTotals.length > 1){
+        const sorted2 = [...allTotals].sort((a,b)=>b-a);
+        unitRate = sorted2[1] < sorted2[0] ? sorted2[1] : 0;
+      }
     } else {
       // Fallback for very small bills or unusual formats
       for(const c of [...sortedCells].reverse()){
@@ -2321,7 +2335,7 @@ function extractItemRows(rows){
           if(!extractedIsLongerAndClean) finalName = pd[6];
         }
       }
-      items.push({ brandNum, brandName:finalName || brandName.trim() || brandNum, ptype, ppack, packSize, packQty:packQtyC, sizeML:sizeMLc, casesDel, btlsDel, btlRate:unitRate, caseRate:0, total });
+      items.push({ brandNum, brandName:finalName || brandName.trim() || brandNum, ptype, ppack, packSize, packQty:packQtyC, sizeML:sizeMLc, casesDel, btlsDel, btlRate:unitRate||0, unitRate:unitRate||0, caseRate:0, total });
     }
   }
 
@@ -2487,19 +2501,23 @@ function parseICDCItemsFallback(lines){
       }
     }
 
-    // ── Total (last money value) and unit rate (second-to-last) ──────────────
+    // ── Total (last money value) and btlRate / caseRate ─────────────────────
+    // Rate format in PDF: "10,804.00 /225.08  10,804.00"
+    //   caseRate = before slash, btlRate = after slash, total = last large number
     const allNums = [...rest.matchAll(/[\d,]+\.?\d*/g)]
       .map(n => parseFloat(n[0].replace(/,/g,'')))
       .filter(n => n > 0 && !isNaN(n));
     if(allNums.length < 2) continue;
     const total    = allNums[allNums.length - 1];
-    const unitRate = allNums[allNums.length - 2];
     if(total < 100) continue;
 
-    // btlRate is second-to-last money value; total is last
-    // Format: "... cases btls caseRate / btlRate total"
-    const btlRate  = allNums[allNums.length - 2];
-    const caseRate = allNums.length >= 3 ? allNums[allNums.length - 3] : 0;
+    // Extract btlRate from slash notation: "caseRate /btlRate"
+    const slashRateM = rest.match(/[\d,]+\.\d{2}\s*\/\s*(\d{1,4}\.\d{1,2})/);
+    const btlRate  = slashRateM ? parseFloat(slashRateM[1]) : allNums[allNums.length - 2];
+    const unitRate = btlRate;
+    const caseRate = slashRateM
+      ? parseFloat(rest.match(/([\d,]+\.\d{2})\s*\//)?.[1]?.replace(/,/g,'') || 0)
+      : (allNums.length >= 3 ? allNums[allNums.length - 3] : 0);
     // Split packSize into components
     const pqM    = packSize.match(/^(\d+)\/(\d+)ml$/i);
     const packQty = pqM ? parseInt(pqM[1]) : 0;
