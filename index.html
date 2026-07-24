@@ -1690,19 +1690,72 @@ function renderQueueCard(r, idx){
     </div>`;
 }
 
-function resolveDuplicate(idx, choice){
+async function resolveDuplicate(idx, choice){
   const r = billQueue[idx];
   if(!r || r.status !== 'duplicate') return;
-  if(choice === 'new'){
-    // Mark as ready-replace so saveAllReady handles it
-    r.status = 'ready-replace';
-    toast('✅ Will replace old bill when you click Save');
-  } else {
-    // Remove from queue entirely
+
+  if(choice === 'old'){
+    // Keep old bill — just remove from queue
     billQueue.splice(idx, 1);
-    toast('📂 Keeping existing bill — removed from queue');
+    renderBillQueue();
+    toast('📂 Keeping existing bill — skipped');
+    return;
   }
+
+  // 'new' — immediately delete old bill and save new one
+  r.status = 'ready-replace';
+  const bill        = r.bill;
+  const targetStore = r.storeNum || CS;
+  const icdc        = bill.icdc || '';
+  const prevCS      = CS;
+  CS = targetStore;
+
+  const bills = ga('bills');
+  // Remove old bill with same ICDC
+  const oldIdx = bills.findIndex(b => b.icdc && b.icdc === icdc);
+  if(oldIdx !== -1){
+    // Also reverse stock from old bill items before removing
+    const oldBill = bills[oldIdx];
+    bills.splice(oldIdx, 1);
+  }
+  // Save new bill
+  bills.push({
+    id:           Date.now(),
+    date:         bill.date         || today(),
+    icdc:         bill.icdc         || '',
+    retailer:     bill.retailer     || STORE_INFO[targetStore]?.name || '',
+    items:        bill.items        || [],
+    netInvoice:   bill.netInvoice   || 0,
+    eChallan:     bill.eChallan     || 0,
+    prevCredit:   bill.prevCredit   || 0,
+    subTotal:     bill.subTotal     || 0,
+    invoiceValue: bill.invoiceValue || 0,
+    mrpRounding:  bill.mrpRounding  || 0,
+    exciseCess:   bill.exciseCess   || 0,
+    tcs:          bill.tcs          || 0,
+    profTax:      bill.profTax      || 0,
+    amtCredited:  bill.amtCredited  || 0,
+    eChallanRef:  bill.eChallanRef  || '',
+    creditBalance:bill.creditBalance|| bill.amtCredited || 0,
+    totalCases:   bill.totalCases   || 0,
+    totalBtls:    bill.totalBtls    || 0,
+  });
+  sa('bills', bills);
+  (bill.items||[]).forEach(it =>
+    addToStock(it.brandName, it.brandNum, it.ptype, it.packSize,
+               it.casesDel, it.btlRate||it.unitRate||0, it.btlsDel,
+               it.packQty||0, it.sizeML||0));
+
+  CS = prevCS;
+
+  // Remove from queue and refresh
+  billQueue.splice(idx, 1);
   renderBillQueue();
+  renderPurchaseList();
+  renderStockTable();
+  renderDash();
+  updatePurchaseFilter();
+  toast(`✅ Old bill replaced with new bill (${icdc || bill.date})`);
 }
 
 function removeQueueItem(qIdx, iIdx){
@@ -1718,8 +1771,8 @@ function clearQueue(){
 }
 
 async function saveAllReady(){
-  const ready = billQueue.filter(r => r.status === 'ready');
-  if(!ready.length) return toast('No bills ready to save');
+  const ready = billQueue.filter(r => r.status === 'ready' || r.status === 'ready-replace');
+  if(!ready.length) return toast('No bills ready to save — use the buttons on any duplicate bills first');
 
   let savedCount = 0;
   let savedICDCsNow = new Set(); // track within this save run to avoid cross-store dupes
