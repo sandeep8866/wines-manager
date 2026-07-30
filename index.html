@@ -244,7 +244,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div class="sp-logo">🥃</div>
   <div class="sp-title">Wines Manager</div>
   <div class="sp-sub">Telangana Excise · ICDC Bills</div>
-  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v2026.07.30.0418 · 30 Jul 2026 04:18 UTC</div>
+  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v12.1 · 30 Jul 2026</div>
   <div class="sp-bar"><div class="sp-fill"></div></div>
 </div>
 
@@ -252,8 +252,8 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
 <div id="topbar">
   <div id="store-btns" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
   <div id="store-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
-  <div id="topbar-date"></div>
-  <div title="30 Jul 2026 04:18 UTC" style="font-size:.62rem;color:rgba(255,255,255,.65);margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,255,255,.1);padding:1px 5px;border-radius:4px">v2026.07.30.0418</div>
+  <div id="topbar-date" style="white-space:nowrap"></div>
+  <div id="app-ver-badge" title="Built: 30 Jul 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v12.1 · 300726</div>
 </div>
 
 <!-- MAIN -->
@@ -1018,8 +1018,8 @@ const STORE_INFO = loadStoreInfo();
 // Safe STORE_INFO accessor — handles both numeric and string keys
 function SI(id){ return STORE_INFO[id] || STORE_INFO[String(id)] || STORE_INFO[Number(id)] || {name:'Store '+id,short:'Store '+id,code:'',lic:''}; }
 
-const APP_VERSION = 'v2026.07.30.0418';
-const APP_BUILD   = '30 Jul 2026 04:18 UTC';
+const APP_VERSION = 'v12.1';
+const APP_BUILD   = '30 Jul 2026';
 let CS = getStoreIds()[0]; // current store — first store by default
 let mnRowCount = 1;
 let currentRpt = 'brandwise';
@@ -6330,6 +6330,9 @@ if(isIOS && !isStandalone && !dismissed){
   const d = new Date();
   const dateEl = document.getElementById('topbar-date');
   if(dateEl) dateEl.textContent = d.toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
+  // Version badge is already in the HTML — just ensure it's visible
+  const verBadge = document.getElementById('app-ver-badge');
+  if(verBadge) verBadge.title = `Built: ${APP_BUILD}`;
   const tallyEl = document.getElementById('tally-dt');
   if(tallyEl) tallyEl.textContent = d.toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'long'});
   renderStoreBtns();
