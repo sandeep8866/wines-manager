@@ -244,7 +244,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div class="sp-logo">🥃</div>
   <div class="sp-title">Wines Manager</div>
   <div class="sp-sub">Telangana Excise · ICDC Bills</div>
-  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v2026.07.24.0501 · 24 Jul 2026 05:01 UTC</div>
+  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v2026.07.30.0418 · 30 Jul 2026 04:18 UTC</div>
   <div class="sp-bar"><div class="sp-fill"></div></div>
 </div>
 
@@ -253,7 +253,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div id="store-btns" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
   <div id="store-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
   <div id="topbar-date"></div>
-  <div title="24 Jul 2026 05:01 UTC" style="font-size:.62rem;color:rgba(255,255,255,.65);margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,255,255,.1);padding:1px 5px;border-radius:4px">v2026.07.24.0501</div>
+  <div title="30 Jul 2026 04:18 UTC" style="font-size:.62rem;color:rgba(255,255,255,.65);margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,255,255,.1);padding:1px 5px;border-radius:4px">v2026.07.30.0418</div>
 </div>
 
 <!-- MAIN -->
@@ -1018,8 +1018,8 @@ const STORE_INFO = loadStoreInfo();
 // Safe STORE_INFO accessor — handles both numeric and string keys
 function SI(id){ return STORE_INFO[id] || STORE_INFO[String(id)] || STORE_INFO[Number(id)] || {name:'Store '+id,short:'Store '+id,code:'',lic:''}; }
 
-const APP_VERSION = 'v2026.07.24.0501';
-const APP_BUILD   = '24 Jul 2026 05:01 UTC';
+const APP_VERSION = 'v2026.07.30.0418';
+const APP_BUILD   = '30 Jul 2026 04:18 UTC';
 let CS = getStoreIds()[0]; // current store — first store by default
 let mnRowCount = 1;
 let currentRpt = 'brandwise';
@@ -1647,16 +1647,39 @@ function renderQueueCard(r, idx){
           </div>
         </div>
         ${(()=>{
-          const pdfTotal = bill.totalCases || 0;
-          const itemSum  = (bill.items||[]).reduce((a,it)=>a+(it.casesDel||0),0);
-          const btlSum   = (bill.items||[]).reduce((a,it)=>a+(it.btlsDel||0),0);
-          const match    = !pdfTotal || Math.abs(pdfTotal - itemSum) <= 1;
-          return pdfTotal
-            ? `<div style="font-size:.7rem;margin:4px 0;padding:4px 8px;border-radius:6px;background:${match?'rgba(39,174,96,.08)':'rgba(220,50,50,.08)'};color:${match?'var(--green)':'var(--red)'}">
-                📦 Cases: <strong>${itemSum}</strong> (items) ${match?'✅ matches':'⚠️ mismatch — '} PDF total <strong>${pdfTotal}</strong>
-                ${btlSum?` · Btls: ${btlSum}`:''}
-              </div>`
-            : `<div style="font-size:.7rem;color:var(--t3);margin:4px 0">📦 Items: ${itemSum} cases parsed</div>`;
+          // Cross-check: sum of cases/btls from parsed line items vs PDF line total
+          // pdfLineCases = from standalone "232 140" before Invoice Value (most reliable)
+          // Falls back to invoiceQtyCases from "Invoice Qty" row
+          const pdfLineCases = bill.pdfLineCases || bill.invoiceQtyCases || 0;
+          const pdfLineBtls  = bill.pdfLineBtls  || bill.invoiceQtyBtls  || 0;
+          const itemCases = (bill.items||[]).reduce((a,it)=>a+(it.casesDel||0),0);
+          const itemBtls  = (bill.items||[]).reduce((a,it)=>a+(it.btlsDel||0),0);
+          const nItems    = (bill.items||[]).length;
+
+          const casesDiff = pdfLineCases - itemCases;
+          const btlsDiff  = pdfLineBtls  - itemBtls;
+          const casesMatch = !pdfLineCases || Math.abs(casesDiff) <= 1;
+          const btlsMatch  = !pdfLineBtls  || Math.abs(btlsDiff)  <= 2;
+          const allMatch   = casesMatch && btlsMatch;
+
+          const bg  = allMatch ? 'rgba(39,174,96,.08)' : 'rgba(220,50,50,.1)';
+          const col = allMatch ? 'var(--green)' : 'var(--red)';
+
+          return `<div style="font-size:.7rem;margin:4px 0;padding:6px 10px;border-radius:6px;
+              background:${bg};color:${col};border:1px solid ${allMatch?'rgba(39,174,96,.2)':'rgba(220,50,50,.3)'}">
+            <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+              <span>${allMatch?'✅':'⚠️'} <strong>${nItems} brands</strong></span>
+              <span>Extracted: <strong>${itemCases} cases${itemBtls?' + '+itemBtls+' btls':''}</strong></span>
+              ${pdfLineCases?`<span style="color:var(--t2)">PDF line total: <strong style="color:${col}">${pdfLineCases} cases${pdfLineBtls?' + '+pdfLineBtls+' btls':''}</strong></span>`:''}
+            </div>
+            ${!casesMatch?`<div style="margin-top:4px;font-weight:700;font-size:.72rem">
+              ⛔ ${Math.abs(casesDiff)} case${Math.abs(casesDiff)!==1?'s':''} ${casesDiff>0?'MISSING — some brands may not have been parsed':'EXTRA — check line items'}
+              — <em>review line items before saving</em>
+            </div>`:''}
+            ${!btlsMatch?`<div style="margin-top:2px;font-size:.68rem;color:orange">
+              ⚠️ Bottles: extracted ${itemBtls} vs PDF ${pdfLineBtls} (diff: ${Math.abs(btlsDiff)})
+            </div>`:''}
+          </div>`;
         })()}
         <details>
           <summary style="font-size:.75rem;color:var(--t2);cursor:pointer;user-select:none">
@@ -1664,26 +1687,53 @@ function renderQueueCard(r, idx){
           </summary>
           <div class="tbl-wrap" style="margin-top:8px">
             <table>
-              <thead><tr><th>Brand</th><th>Qty</th><th>Size</th><th>Type</th>
-                <th class="num">Cases</th><th class="num">Btls</th>
-                <th class="num">Btl Rate</th><th class="num">Total</th><th></th></tr></thead>
-              <tbody>${bill.items.map((it,ii)=>`
-                <tr>
-                  <td><input class="fc" style="width:130px;padding:2px 5px;font-size:.7rem"
+              <thead><tr>
+                <th style="width:24px;text-align:center;color:var(--t3)">#</th>
+                <th>Brand Name</th>
+                <th style="width:42px">Code</th>
+                <th style="width:60px">Pack</th>
+                <th style="width:38px">Type</th>
+                <th class="num" style="width:48px">Cases</th>
+                <th class="num" style="width:38px">Btls</th>
+                <th class="num" style="width:70px">Btl Rate</th>
+                <th class="num" style="width:80px">Total</th>
+                <th style="width:24px"></th>
+              </tr></thead>
+              <tbody>${bill.items.map((it,ii)=>{
+                const code4 = (it.brandNum||'').match(/(\d{4})/)?.[1]||'';
+                return `<tr>
+                  <td style="text-align:center;font-size:.65rem;color:var(--t3);font-weight:600">${ii+1}</td>
+                  <td><input class="fc" style="width:140px;padding:2px 5px;font-size:.7rem"
                       value="${esc(it.brandName)}" id="qn-${idx}-${ii}"></td>
-                  <td style="font-size:.7rem;color:var(--t2);text-align:center">${it.packQty||''}</td>
-                  <td style="font-size:.7rem;color:var(--t2);text-align:center">${it.sizeML?it.sizeML+'ml':''}</td>
-                  <td><span class="tag ${it.ptype==='Beer'?'tag-beer':it.ptype==='Duty Paid'?'tag-dp':'tag-iml'}">${it.ptype}</span></td>
-                  <td class="num"><input class="fc" type="number" style="width:48px;padding:2px 5px;font-size:.7rem;text-align:right"
-                      value="${it.casesDel}" id="qc-${idx}-${ii}"></td>
-                  <td class="num"><input class="fc" type="number" style="width:38px;padding:2px 5px;font-size:.7rem;text-align:right"
-                      value="${it.btlsDel}" id="qb-${idx}-${ii}"></td>
-                  <td class="num"><input class="fc" type="number" style="width:65px;padding:2px 5px;font-size:.7rem;text-align:right"
+                  <td style="font-size:.68rem;color:var(--gold2);text-align:center;font-weight:600">${code4}</td>
+                  <td style="font-size:.68rem;color:var(--t2);text-align:center">${it.packQty||''}${it.sizeML?'/'+it.sizeML:''}ml</td>
+                  <td><span class="tag ${it.ptype==='Beer'?'tag-beer':it.ptype==='Duty Paid'?'tag-dp':'tag-iml'}" style="font-size:.6rem">${it.ptype==='Duty Paid'?'DP':it.ptype}</span></td>
+                  <td class="num"><input class="fc" type="number" style="width:44px;padding:2px 5px;font-size:.75rem;text-align:right;font-weight:600"
+                      value="${it.casesDel||0}" id="qc-${idx}-${ii}"
+                      oninput="updateQueueTotal(${idx})"></td>
+                  <td class="num"><input class="fc" type="number" style="width:36px;padding:2px 5px;font-size:.7rem;text-align:right"
+                      value="${it.btlsDel||0}" id="qb-${idx}-${ii}"
+                      oninput="updateQueueTotal(${idx})"></td>
+                  <td class="num"><input class="fc" type="number" style="width:66px;padding:2px 5px;font-size:.7rem;text-align:right"
                       value="${(it.btlRate||it.unitRate||0)}" id="qu-${idx}-${ii}"></td>
                   <td class="num" style="color:var(--gold2);font-size:.75rem">${fmtR(it.total)}</td>
-                  <td><button class="btn btn-xs btn-out" onclick="removeQueueItem(${idx},${ii})">✕</button></td>
-                </tr>`).join('')}
+                  <td><button class="btn btn-xs btn-out" onclick="removeQueueItem(${idx},${ii})" style="padding:1px 5px">✕</button></td>
+                </tr>`;}).join('')}
               </tbody>
+              <tfoot>
+                <tr style="background:var(--s3);font-weight:700;border-top:2px solid var(--border)">
+                  <td colspan="5" style="padding:4px 8px;font-size:.72rem">TOTAL</td>
+                  <td class="num" id="qt-cases-${idx}" style="padding:4px 6px;font-size:.78rem;color:var(--green)">
+                    ${bill.items.reduce((a,it)=>a+(it.casesDel||0),0)}
+                  </td>
+                  <td class="num" id="qt-btls-${idx}" style="padding:4px 6px;font-size:.75rem;color:var(--t2)">
+                    ${bill.items.reduce((a,it)=>a+(it.btlsDel||0),0)}
+                  </td>
+                  <td colspan="3" style="padding:4px 8px;font-size:.68rem;color:var(--t3)">
+                    PDF: ${bill.totalCases||'?'} cases${bill.invoiceQtyBtls?' + '+bill.invoiceQtyBtls+' btls':''}
+                  </td>
+                </tr>
+              </tfoot>
             </table>
           </div>
         </details>` : ''}
@@ -1737,8 +1787,12 @@ async function resolveDuplicate(idx, choice){
     amtCredited:  bill.amtCredited  || 0,
     eChallanRef:  bill.eChallanRef  || '',
     creditBalance:bill.creditBalance|| bill.amtCredited || 0,
-    totalCases:   bill.totalCases   || 0,
-    totalBtls:    bill.totalBtls    || 0,
+    totalCases:      bill.totalCases      || 0,
+    totalBtls:       bill.totalBtls       || 0,
+    invoiceQtyCases: bill.invoiceQtyCases || 0,
+    invoiceQtyBtls:  bill.invoiceQtyBtls  || 0,
+    pdfLineCases:    bill.pdfLineCases    || 0,
+    pdfLineBtls:     bill.pdfLineBtls     || 0,
   });
   sa('bills', bills);
   (bill.items||[]).forEach(it =>
@@ -1758,6 +1812,26 @@ async function resolveDuplicate(idx, choice){
   toast(`✅ Old bill replaced with new bill (${icdc || bill.date})`);
 }
 
+function updateQueueTotal(idx){
+  // Live-update the case/btl totals as user edits
+  const r = billQueue[idx];
+  if(!r) return;
+  let cases = 0, btls = 0;
+  (r.bill.items||[]).forEach((_,ii)=>{
+    cases += parseFloat(document.getElementById(`qc-${idx}-${ii}`)?.value)||0;
+    btls  += parseFloat(document.getElementById(`qb-${idx}-${ii}`)?.value)||0;
+  });
+  const cEl = document.getElementById(`qt-cases-${idx}`);
+  const bEl = document.getElementById(`qt-btls-${idx}`);
+  if(cEl) cEl.textContent = cases;
+  if(bEl) bEl.textContent = btls;
+  // Highlight if mismatch with PDF total
+  const pdfTotal = r.bill.totalCases || 0;
+  if(cEl && pdfTotal){
+    cEl.style.color = Math.abs(cases - pdfTotal) <= 1 ? 'var(--green)' : 'var(--red)';
+  }
+}
+
 function removeQueueItem(qIdx, iIdx){
   billQueue[qIdx].bill.items.splice(iIdx, 1);
   if(billQueue[qIdx].bill.items.length === 0) billQueue[qIdx].status = 'error';
@@ -1773,6 +1847,29 @@ function clearQueue(){
 async function saveAllReady(){
   const ready = billQueue.filter(r => r.status === 'ready' || r.status === 'ready-replace');
   if(!ready.length) return toast('No bills ready to save — use the buttons on any duplicate bills first');
+
+  // Check for case count mismatches — warn and block if significant
+  const mismatched = ready.filter(r => {
+    const bill = r.bill;
+    const pdfCases  = bill.invoiceQtyCases || bill.totalCases || 0;
+    const itemCases = (bill.items||[]).reduce((a,it)=>a+(it.casesDel||0),0);
+    return pdfCases > 0 && Math.abs(pdfCases - itemCases) > 1;
+  });
+  if(mismatched.length > 0){
+    const details = mismatched.map(r=>{
+      const bill = r.bill;
+      const pdfCases  = bill.pdfLineCases || bill.invoiceQtyCases || bill.totalCases || 0;
+      const itemCases = (bill.items||[]).reduce((a,it)=>a+(it.casesDel||0),0);
+      return `${bill.icdc||bill.date}: extracted ${itemCases} vs PDF ${pdfCases} (${Math.abs(pdfCases-itemCases)} cases ${pdfCases>itemCases?'missing':'extra'})`;
+    }).join('\n');
+    const proceed = confirm(
+      `⚠️ Case count mismatch detected:\n\n${details}\n\n` +
+      `The extracted case count does not match the PDF.\n` +
+      `This may mean some brands were not parsed correctly.\n\n` +
+      `Click OK to save anyway, or Cancel to review the line items first.`
+    );
+    if(!proceed) return;
+  }
 
   let savedCount = 0;
   let savedICDCsNow = new Set(); // track within this save run to avoid cross-store dupes
@@ -2270,7 +2367,7 @@ function extractItemRows(rows){
           if(found >= 1) break;
           continue;
         }
-        const v = parseInt(s);
+        const v = parseInt(s.replace('§',''));
         if(v > 500) break;
         if(found === 0){ casesDel = v; found++; }
         else           { btlsDel  = v; break; }
@@ -2372,10 +2469,10 @@ function parseICDCItemsFallback(lines){
   // "RUM", "WHISKY" which are part of the current item's wrapping name).
   const IS_BRANDNAME_ONLY = ln => {
     const t = ln.trim();
-    return /^[A-Z][A-Z\s'`\-\.&0-9]{4,}$/.test(t)   // ≥5 uppercase chars
+    return /^[A-Z][A-Z\s'`\-\.&0-9]{2,}$/.test(t)   // ≥3 uppercase chars
       && !/\d+\s*\/\s*\d+\s*ml/i.test(t)           // no pack-size
       && !/^\d{1,3}\s+\d{4}/.test(t)                  // not a new item row
-      && t.split(/\s+/).length >= 2;                    // at least 2 words
+      && !/\b(IML|Beer|Duty\s*Paid)\s*[GPC]\b/i.test(t); // not a type+pack line
   };
 
   const joinedLines = [];
@@ -2399,11 +2496,12 @@ function parseICDCItemsFallback(lines){
     }
   }
   const fullText = joinedLines.join('\n')
-    // Normalize fused tokens from PDF cell extraction (pages 2-3 of this bill format)
-    // Fused qty after pack size: "ml10" means "1 case 0 btls", "ml200" means "20 cases 0 btls"
-    // Split by inserting space before last digit(s) that are 0 (btls count)
-    .replace(/\bml(\d{1,2})(0)\b/gi, (_, c, b) => `ml ${c} ${b}`) // "ml10"→"ml 1 0", "ml200"→"ml 20 0"
-    .replace(/\bml(\d)/gi, 'ml $1')                       // "ml3"→"ml 3" (non-zero btls)
+    // Mark fused qty tokens with § so extractor knows they were originally fused:
+    // "ml10" (no space between ml and digit) → "ml §1 §0"
+    // "ml 60" (space already present) → unchanged, §-markers NOT added
+    .replace(/\bml(\d)(\d)\b/gi, (_, a, b) => `ml §${a} §${b}`) // "ml10"→"ml §1 §0"
+    .replace(/\bml(\d)/gi, 'ml $1')                       // "ml3"→"ml §3" fused single
+    .replace(/\bml (\d)\b(?! §)/gi, 'ml $1')             // already-spaced: no markers
     .replace(/\bIML([GPC])\b/g, 'IML $1')                 // "IMLG"       → "IML G"
     .replace(/\bIML([GPC])(?=\s*\d)/g, 'IML $1')         // "IMLG12"     → "IML G 12"
     .replace(/\bDuty\s*Paid([GPC])\b/gi, 'Duty Paid $1') // "DutyPaidG"  → "Duty Paid G"
@@ -2488,16 +2586,29 @@ function parseICDCItemsFallback(lines){
     const psAll = [...rest.matchAll(/\d+\s*\/\s*\d+\s*ml/gi)];
     const lastPs = psAll[psAll.length - 1];
     if(lastPs){
-      const afterPs = rest.slice(lastPs.index + lastPs[0].length);
+      const afterPs = rest.slice(lastPs.index + lastPs[0].length).trim();
       let found = 0;
       for(const tok of afterPs.split(/\s+/)){
         const s = tok.trim();
         if(!s) continue;
-        if(!/^\d+$/.test(s)){ if(found >= 1) break; continue; }
+        if(!/^§?\d+$/.test(s)){ if(found >= 1) break; continue; }
         const v = parseInt(s);
-        if(v > 500) break;
-        if(found === 0){ casesDel = v; found++; }
-        else           { btlsDel  = v; break; }
+        if(v > 9999) break; // skip huge numbers (rates/totals)
+        if(found === 0){
+          // Check for fused "cases+btls" format: e.g. "10" = 1 case + 0 btls
+          // Only applies when the digit string is exactly 2 chars and ends in 0
+          // AND is followed immediately by a rate/money value (not another integer)
+          // §-prefixed tokens are from fused format (e.g. original "ml10" → "§1 §0")
+          if(s.startsWith('§')){
+            casesDel = parseInt(s.slice(1)) || 0;
+            found++;
+          } else {
+            casesDel = v; found++;
+          }
+        } else {
+          btlsDel = s.startsWith('§') ? parseInt(s.slice(1)) : v;
+          break;
+        }
       }
     }
 
@@ -2758,13 +2869,46 @@ function parseICDCHeader(text, rawText){
 
   // Total Cases & Bottles Delivered — last pair in "Total (Cases/Btls):" line
   // Format: "Total (Cases/Btls): IMFL_cases / IMFL_btls Beer_cases / Beer_btls TOTAL_cases / TOTAL_btls"
-  const tcLine = text.match(/Total\s*\(Cases\/Btls\)[^0-9]*([\d\s\/]+)/i);
+  // Parse "Total (Cases/Btls): 119 / 0   13 / 0   132 / 0"
+  // Stop at end of line to avoid bleeding into Breakage/Shortage rows
   bill.totalCases = 0; bill.totalBtls = 0;
+  bill.invoiceQtyCases = 0; bill.invoiceQtyBtls = 0;
+
+  const tcLine = text.match(/Total\s*\(Cases\/Btls\)[^\n]{0,80}/i);
   if(tcLine){
-    const pairs = [...tcLine[1].matchAll(/(\d+)\s*\/\s*(\d+)/g)];
+    const pairs = [...tcLine[0].matchAll(/(\d+)\s*\/\s*(\d+)/g)];
     if(pairs.length > 0){
-      bill.totalCases = parseInt(pairs[pairs.length-1][1]);
-      bill.totalBtls  = parseInt(pairs[pairs.length-1][2]);
+      // Last pair is the grand total
+      bill.totalCases = parseInt(pairs[pairs.length-1][1]) || 0;
+      bill.totalBtls  = parseInt(pairs[pairs.length-1][2]) || 0;
+    }
+  }
+
+  // Parse "Invoice Qty:" line — actual delivered cases/btls per brand lines
+  const iqLine = text.match(/Invoice\s*Qty[^\n]{0,80}/i);
+  if(iqLine){
+    const pairs2 = [...iqLine[0].matchAll(/(\d+)\s*\/\s*(\d+)/g)];
+    if(pairs2.length > 0){
+      bill.invoiceQtyCases = parseInt(pairs2[pairs2.length-1][1]) || 0;
+      bill.invoiceQtyBtls  = parseInt(pairs2[pairs2.length-1][2]) || 0;
+    }
+  }
+
+  // Parse the standalone "NNN MMM" before "Invoice Value:" — this is the
+  // actual total cases + bottles shown at the bottom of the items table
+  // e.g. "232 140 Invoice\nValue:" — two numbers just before Invoice Value
+  // This is the most reliable cross-check source (direct sum of all lines)
+  const preInvM = text.match(/(\d{1,4})\s+(\d{1,4})\s+Invoice\s*\n?\s*Value/i);
+  if(preInvM){
+    const c = parseInt(preInvM[1]);
+    const b = parseInt(preInvM[2]);
+    // Sanity check: cases should be > 0 and bottles ≤ cases*packQty
+    if(c > 0 && c < 5000 && b < 5000){
+      bill.pdfLineCases = c;
+      bill.pdfLineBtls  = b;
+      // Also use as invoiceQtyCases if not already set
+      if(!bill.invoiceQtyCases) bill.invoiceQtyCases = c;
+      if(!bill.invoiceQtyBtls)  bill.invoiceQtyBtls  = b;
     }
   }
 
@@ -3788,8 +3932,12 @@ async function repairFromPDFs(input){
         profTax:      bill.profTax      || 0,
         amtCredited:   bill.amtCredited  || 0,
         creditBalance: bill.creditBalance || bill.amtCredited || 0,
-        totalCases:    bill.totalCases   || 0,
-        totalBtls:    bill.totalBtls    || 0,
+        totalCases:      bill.totalCases      || 0,
+        totalBtls:       bill.totalBtls       || 0,
+        invoiceQtyCases: bill.invoiceQtyCases || 0,
+        invoiceQtyBtls:  bill.invoiceQtyBtls  || 0,
+        pdfLineCases:    bill.pdfLineCases    || 0,
+        pdfLineBtls:     bill.pdfLineBtls     || 0,
       });
       sa('bills', bills);
 
