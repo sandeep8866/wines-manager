@@ -253,7 +253,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div id="store-btns" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
   <div id="store-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
   <div id="topbar-date" style="white-space:nowrap"></div>
-  <div id="app-ver-badge" title="Built: 30 Jul 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v12.1 · 300726</div>
+  <div id="app-ver-badge" title="Built: 30 Jul 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v12.4 · 300726</div>
 </div>
 
 <!-- MAIN -->
@@ -320,8 +320,23 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
     </div>
     <input type="file" id="pfinput" accept=".pdf" multiple style="display:none"
            onchange="handlePDFs(this)">
-    <div style="font-size:.65rem;color:var(--t3);margin-top:4px;text-align:center">
-      💡 Tip: The browser remembers the last folder you selected here separately from the Price List upload
+    <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <a href="https://drive.google.com/open?id=1WtbLa8J_X8mMdj1hVbVT-gcuRVmLkfs8&usp=drive_fs" target="_blank" rel="noopener"
+         onclick="event.stopPropagation()"
+         style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;
+                background:#1a73e8;color:#fff;border-radius:8px;font-size:.78rem;
+                font-weight:600;text-decoration:none;flex-shrink:0">
+        <svg width="14" height="14" viewBox="0 0 87.3 78" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L27.5 53H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
+          <path d="M43.65 25L29.9 1.2C28.55 2 27.4 3.1 26.6 4.5L1.2 48.5C.4 49.9 0 51.45 0 53h27.5z" fill="#00ac47"/>
+          <path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5H59.8l5.85 11.3z" fill="#ea4335"/>
+          <path d="M43.65 25L57.4 1.2C56.05.4 54.5 0 52.9 0H34.4c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
+          <path d="M59.8 53H27.5L13.75 76.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.4 4.5-1.2z" fill="#2684fc"/>
+          <path d="M73.4 26.5l-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3L43.65 25 59.8 53h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
+        </svg>
+        Open ICDC Bills Folder
+      </a>
+      <span style="font-size:.65rem;color:var(--t3)">Open folder → download PDF → upload here</span>
     </div>
     <div id="pdf-status" style="margin-top:8px"></div>
     <div style="margin-top:6px;text-align:right">
@@ -1018,7 +1033,7 @@ const STORE_INFO = loadStoreInfo();
 // Safe STORE_INFO accessor — handles both numeric and string keys
 function SI(id){ return STORE_INFO[id] || STORE_INFO[String(id)] || STORE_INFO[Number(id)] || {name:'Store '+id,short:'Store '+id,code:'',lic:''}; }
 
-const APP_VERSION = 'v12.1';
+const APP_VERSION = 'v12.4';
 const APP_BUILD   = '30 Jul 2026';
 let CS = getStoreIds()[0]; // current store — first store by default
 let mnRowCount = 1;
@@ -2476,23 +2491,34 @@ function parseICDCItemsFallback(lines){
   };
 
   const joinedLines = [];
-  let pendingBrandName = ''; // brand name line waiting for its item row
+  let pendingBrandName = ''; // brand name lines waiting to be prepended to next item row
 
   for(const ln of lines){
     if(ln.trim() === '') continue;
+    const t = ln.trim();
 
-    if(ITEM_START.test(ln)){
-      // New item row — prepend any waiting brand name text
-      joinedLines.push(pendingBrandName ? pendingBrandName + ' ' + ln.trim() : ln);
+    if(ITEM_START.test(t)){
+      // New item row — prepend any accumulated brand name text
+      joinedLines.push(pendingBrandName ? pendingBrandName + ' ' + t : t);
       pendingBrandName = '';
-    } else if(IS_BRANDNAME_ONLY(ln.trim()) && joinedLines.length > 0 && IS_COMPLETE(joinedLines[joinedLines.length-1])){
-      // Previous item is complete — this brand name belongs to the NEXT item
-      pendingBrandName = (pendingBrandName ? pendingBrandName + ' ' : '') + ln.trim();
+    } else if(IS_BRANDNAME_ONLY(t)){
+      if(joinedLines.length === 0){
+        // Nothing yet — treat as pending
+        pendingBrandName = (pendingBrandName ? pendingBrandName + ' ' : '') + t;
+      } else if(IS_COMPLETE(joinedLines[joinedLines.length - 1])){
+        // Previous item is fully parsed — this belongs to the NEXT item
+        pendingBrandName = (pendingBrandName ? pendingBrandName + ' ' : '') + t;
+      } else {
+        // Previous item not yet complete — this is a continuation of current item name
+        // e.g. "BLACK DOG CEN BLACK" / "RES.AGED AND RARE BLD SCT" / "WHISKY"
+        // all arrive before the IML/Beer type line
+        joinedLines[joinedLines.length - 1] += ' ' + t;
+      }
     } else if(joinedLines.length === 0){
-      joinedLines.push(ln);
+      joinedLines.push(t);
     } else {
-      // Regular continuation — append to previous line
-      joinedLines[joinedLines.length - 1] += ' ' + ln.trim();
+      // Regular continuation (type+pack line, qty, rates) — append to current item
+      joinedLines[joinedLines.length - 1] += ' ' + t;
     }
   }
   const fullText = joinedLines.join('\n')
@@ -2518,7 +2544,9 @@ function parseICDCItemsFallback(lines){
   //     |\d{5,7}\s)                 — or next merged sl+code
   //     |\n\s*TIN|\n\s*Particulars
   //     |\n\s*Invoice\s*Qty|$)
-  const rowRe = /(?:^|\n)\s*(?:(\d{1,3})\s+(\d{4})|(\d{1,3})(\d{4}))\s*(?:\((\d+)\))?\s+(.+?)(?=\n\s*(?:\d{1,3}\s+\d{4}|\d{5,7}\s)|\n\s*TIN|\n\s*Particulars|\n\s*Invoice\s*Qty|$)/gs;
+  // rowRe: allow optional brand-name prefix text before the serial+code
+  // e.g. "BLACK DOG CEN BLACK 7 7291 IML G..." — brand name prepended by joiner
+  const rowRe = /(?:^|\n)\s*(?:[A-Z][^\n]*?)?\b(?:(\d{1,3})\s+(\d{4})|(\d{1,3})(\d{4}))\s*(?:\((\d+)\))?\s+(.+?)(?=\n\s*(?:[A-Z][^\n]*?\b)?(?:\d{1,3}\s+\d{4}|\d{5,7}\s)|\n\s*TIN|\n\s*Particulars|\n\s*Invoice\s*Qty|$)/gs;
 
   let m;
   while((m = rowRe.exec(fullText)) !== null){
@@ -6085,40 +6113,150 @@ async function fetchGdrivePDFs(refetchAll){
       } catch(e){
         failed++;
         const errMsg = e.message || 'Unknown error';
+        const isTimeout = /timeout/i.test(errMsg);
         const isDriveErr = /drive|service|permission|quota/i.test(errMsg);
-        const shortMsg = isDriveErr
-          ? `Drive error — skipping`
-          : errMsg.slice(0,40);
+        const shortMsg = isTimeout ? 'Timeout — will retry' : isDriveErr ? 'Drive error — skipping' : errMsg.slice(0,40);
         const log = document.getElementById('fetch-log');
-        if(log) log.innerHTML = `❌ ${f.name.slice(0,20)}: ${shortMsg}<br>` + log.innerHTML;
+        if(log) log.innerHTML = `❌ ${f.name.slice(0,25)}: ${shortMsg}<br>` + log.innerHTML;
         console.warn('Fetch error', f.name, e.message);
-        // Longer pause after Drive error
-        await new Promise(r => setTimeout(r, isDriveErr ? 500 : 200));
+        // Store failed file info for retry — DO NOT mark as fetched
+        const failedFiles = JSON.parse(localStorage.getItem('lm_failed_drive_files')||'[]');
+        const alreadyFailed = failedFiles.findIndex(x=>x.id===f.id);
+        const failEntry = {id:f.id, name:f.name, error:shortMsg, time:new Date().toISOString()};
+        if(alreadyFailed>=0) failedFiles[alreadyFailed]=failEntry;
+        else failedFiles.push(failEntry);
+        localStorage.setItem('lm_failed_drive_files', JSON.stringify(failedFiles));
+        await new Promise(r => setTimeout(r, isTimeout ? 1000 : isDriveErr ? 500 : 200));
       }
     }
 
-    // Update last fetch time
-    setLastFetchTime();
-    // Start auto-check now that folder is configured
+    // Only update last fetch time if no failures (so failed files are retried next run)
+    if(failed === 0) setLastFetchTime();
+    else if(saved > 0 || updated > 0) setLastFetchTime(); // partial success — still update time
+
     startDriveAutoCheck();
 
     const cachedCount = getFetchedFileIds().size;
-    const summary = refetchAll
-      ? `✅ Done: ${updated} updated, ${saved} new, ${skipped} skipped, ${failed} errors`
-      : `✅ Done: ${saved} new bills saved, ${skipped} already existed, ${failed} errors · ${cachedCount} files cached`;
+    const failedFiles = JSON.parse(localStorage.getItem('lm_failed_drive_files')||'[]');
+    const pendingRetry = failedFiles.filter(f => !getFetchedFileIds().has(f.id));
 
-    if(st) st.innerHTML=`<span style="color:var(--green)">${summary}</span>`;
-    toast(summary);
+    let summaryHtml = '';
+    if(failed === 0){
+      summaryHtml = `<span style="color:var(--green)">✅ Done: ${saved} new, ${updated} updated, ${skipped} already existed</span>`;
+    } else {
+      summaryHtml = `<span style="color:var(--green)">✅ ${saved} new, ${updated} updated</span>
+        <span style="color:var(--red);margin-left:8px">❌ ${failed} failed</span>`;
+    }
+
+    if(pendingRetry.length > 0){
+      summaryHtml += `
+        <div style="margin-top:8px;padding:8px;background:rgba(220,50,50,.06);border-radius:8px;border:1px solid rgba(220,50,50,.2)">
+          <div style="font-size:.72rem;font-weight:600;color:var(--red);margin-bottom:6px">
+            ⚠️ ${pendingRetry.length} file${pendingRetry.length>1?'s':''} failed — not yet saved:
+          </div>
+          <div style="font-size:.68rem;color:var(--t2);margin-bottom:8px">
+            ${pendingRetry.map(f=>`<div>• ${f.name} <span style="color:var(--t3)">(${f.error})</span></div>`).join('')}
+          </div>
+          <button class="btn btn-xs btn-primary" onclick="retryFailedDriveFiles()">🔄 Retry Failed Files</button>
+          <button class="btn btn-xs btn-out" style="margin-left:6px;color:var(--t3)" onclick="clearFailedDriveFiles()">✕ Dismiss</button>
+        </div>`;
+    }
+
+    if(st) st.innerHTML = summaryHtml;
+    toast(failed===0 ? `✅ ${saved} new bills saved` : `⚠️ ${saved} saved, ${failed} failed — tap Retry`);
     renderPurchaseList(); renderDash(); renderStockTable();
     checkMissingFinancials();
-
-    // Reset nav badge
     const navBadge = document.querySelector('.nb[onclick*="purchases"] .ni');
     if(navBadge) navBadge.textContent = '📦';
 
   } catch(e){
     if(st) st.innerHTML=`<span style="color:var(--red)">❌ ${e.message}</span>`;
   }
+}
+
+// ── Retry failed Drive file downloads ────────────────────────────────────────
+async function retryFailedDriveFiles(){
+  const failedFiles = JSON.parse(localStorage.getItem('lm_failed_drive_files')||'[]');
+  const fetchedIds  = getFetchedFileIds();
+  const toRetry     = failedFiles.filter(f => !fetchedIds.has(f.id));
+  if(!toRetry.length){ toast('No failed files to retry'); return; }
+
+  const st = document.getElementById('gdrive-pdf-status');
+  if(st) st.innerHTML = `<div class="loading"><div class="spin"></div>Retrying ${toRetry.length} failed file${toRetry.length>1?'s':''}…</div>`;
+
+  // Clear the failed list for files we're about to retry
+  const remaining = failedFiles.filter(f => fetchedIds.has(f.id));
+  localStorage.setItem('lm_failed_drive_files', JSON.stringify(remaining));
+
+  let saved = 0, stillFailed = 0;
+  for(const f of toRetry){
+    try{
+      if(st) st.innerHTML = `<div class="loading"><div class="spin"></div>Retrying: ${f.name}…</div>`;
+      const fr = await cloudCall({action:'getFile', fileId:f.id});
+      if(!fr.ok || !fr.base64) throw new Error(fr.error || 'Download failed');
+      const bin  = atob(fr.base64); fr.base64 = null;
+      const buf  = new Uint8Array(bin.length);
+      for(let j=0;j<bin.length;j++) buf[j] = bin.charCodeAt(j);
+      const file   = new File([new Blob([buf],{type:'application/pdf'})], f.name, {type:'application/pdf'});
+      const parsed = await extractPDF(file);
+      if(!parsed?.items?.length) throw new Error('Parse failed');
+      const targetStore = detectStore(parsed) || CS;
+      const prevCS = CS; CS = targetStore;
+      const bills = ga('bills');
+      if(bills.findIndex(b=>b.icdc&&b.icdc===parsed.icdc) < 0){
+        bills.push({id:Date.now(), date:parsed.date||today(), icdc:parsed.icdc,
+          retailer:parsed.retailer||SI(targetStore).name, items:parsed.items||[],
+          netInvoice:parsed.netInvoice||0, eChallan:parsed.eChallan||0,
+          prevCredit:parsed.prevCredit||0, subTotal:parsed.subTotal||0,
+          invoiceValue:parsed.invoiceValue||0, mrpRounding:parsed.mrpRounding||0,
+          exciseCess:parsed.exciseCess||0, tcs:parsed.tcs||0,
+          amtCredited:parsed.amtCredited||0, eChallanRef:parsed.eChallanRef||'',
+          creditBalance:parsed.creditBalance||parsed.amtCredited||0, storeNum:targetStore});
+        sa('bills', bills);
+        (parsed.items||[]).forEach(it=>addToStock(it.brandName,it.brandNum,it.ptype,it.packSize,it.casesDel,it.btlRate||0,it.btlsDel));
+      }
+      CS = prevCS;
+      addFetchedFileId(f.id);
+      saved++;
+    } catch(e){
+      stillFailed++;
+      const failedFiles2 = JSON.parse(localStorage.getItem('lm_failed_drive_files')||'[]');
+      failedFiles2.push({id:f.id, name:f.name, error:e.message?.slice(0,40)||'Error', time:new Date().toISOString()});
+      localStorage.setItem('lm_failed_drive_files', JSON.stringify(failedFiles2));
+    }
+    await new Promise(r=>setTimeout(r,500));
+  }
+
+  const msg = stillFailed
+    ? `✅ ${saved} saved · ❌ ${stillFailed} still failing`
+    : `✅ All ${saved} retried file${saved>1?'s':''} saved successfully!`;
+  if(st) st.innerHTML = `<span style="color:${stillFailed?'var(--t2)':'var(--green)'}">${msg}</span>
+    ${stillFailed?`<button class="btn btn-xs" style="margin-left:8px" onclick="retryFailedDriveFiles()">🔄 Retry Again</button>`:''}`;
+  toast(msg);
+  renderPurchaseList(); renderDash(); renderStockTable();
+}
+
+function clearFailedDriveFiles(){
+  localStorage.removeItem('lm_failed_drive_files');
+  const st = document.getElementById('gdrive-pdf-status');
+  if(st) st.innerHTML = '';
+  toast('Failed file list cleared');
+}
+
+// Show pending retries on load if any exist
+function checkPendingRetries(){
+  const failedFiles = JSON.parse(localStorage.getItem('lm_failed_drive_files')||'[]');
+  const fetchedIds  = getFetchedFileIds();
+  const pending     = failedFiles.filter(f=>!fetchedIds.has(f.id));
+  if(!pending.length) return;
+  const st = document.getElementById('gdrive-pdf-status');
+  if(!st) return;
+  st.innerHTML = `<div style="padding:8px;background:rgba(220,50,50,.06);border-radius:8px;border:1px solid rgba(220,50,50,.2);font-size:.72rem">
+    <strong style="color:var(--red)">⚠️ ${pending.length} file${pending.length>1?'s':''} previously failed to download:</strong>
+    <div style="margin:4px 0;color:var(--t2)">${pending.map(f=>`• ${f.name}`).join('<br>')}</div>
+    <button class="btn btn-xs btn-primary" onclick="retryFailedDriveFiles()">🔄 Retry Now</button>
+    <button class="btn btn-xs btn-out" style="margin-left:6px;color:var(--t3)" onclick="clearFailedDriveFiles()">✕ Dismiss</button>
+  </div>`;
 }
 
 // Re-process PDFs and UPDATE existing bills with corrected financial data
@@ -6342,6 +6480,7 @@ if(isIOS && !isStandalone && !dismissed){
   renderDash();
   renderPurchaseList();
   renderStockTable();
+  setTimeout(checkPendingRetries, 1500); // Show any previously failed Drive files
   renderPayPage();
   updatePurchaseFilter();
   // Pre-fill sync URL
