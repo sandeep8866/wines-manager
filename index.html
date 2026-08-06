@@ -244,7 +244,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div class="sp-logo">🥃</div>
   <div class="sp-title">Wines Manager</div>
   <div class="sp-sub">Telangana Excise · ICDC Bills</div>
-  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v12.1 · 30 Jul 2026</div>
+  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v13.0 · 06 Aug 2026</div>
   <div class="sp-bar"><div class="sp-fill"></div></div>
 </div>
 
@@ -253,7 +253,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div id="store-btns" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
   <div id="store-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
   <div id="topbar-date" style="white-space:nowrap"></div>
-  <div id="app-ver-badge" title="Built: 30 Jul 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v12.11 · 300726</div>
+  <div id="app-ver-badge" title="Built: 06 Aug 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v13.0 · 060826</div>
 </div>
 
 <!-- MAIN -->
@@ -1033,8 +1033,8 @@ const STORE_INFO = loadStoreInfo();
 // Safe STORE_INFO accessor — handles both numeric and string keys
 function SI(id){ return STORE_INFO[id] || STORE_INFO[String(id)] || STORE_INFO[Number(id)] || {name:'Store '+id,short:'Store '+id,code:'',lic:''}; }
 
-const APP_VERSION = 'v12.11';
-const APP_BUILD   = '30 Jul 2026';
+const APP_VERSION = 'v13.0';
+const APP_BUILD   = '06 Aug 2026';
 let CS = getStoreIds()[0]; // current store — first store by default
 let mnRowCount = 1;
 let currentRpt = 'brandwise';
@@ -1662,9 +1662,7 @@ function renderQueueCard(r, idx){
           </div>
         </div>
         ${(()=>{
-          // Cross-check: sum of cases/btls from parsed line items vs PDF line total
-          // pdfLineCases = from standalone "232 140" before Invoice Value (most reliable)
-          // Falls back to invoiceQtyCases from "Invoice Qty" row
+          // Cross-check 1: sum of cases/btls from parsed line items vs PDF line total
           const pdfLineCases = bill.pdfLineCases || bill.invoiceQtyCases || 0;
           const pdfLineBtls  = bill.pdfLineBtls  || bill.invoiceQtyBtls  || 0;
           const itemCases = (bill.items||[]).reduce((a,it)=>a+(it.casesDel||0),0);
@@ -1675,8 +1673,15 @@ function renderQueueCard(r, idx){
           const btlsDiff  = pdfLineBtls  - itemBtls;
           const casesMatch = !pdfLineCases || Math.abs(casesDiff) <= 1;
           const btlsMatch  = !pdfLineBtls  || Math.abs(btlsDiff)  <= 2;
-          const allMatch   = casesMatch && btlsMatch;
 
+          // Cross-check 2: sum of item totals (cases×rate + btls×rate) vs PDF Invoice Value
+          // Each item's .total is (casesDel × caseRate) + (btlsDel × btlRate) as read from the bill
+          const itemTotalSum = (bill.items||[]).reduce((a,it)=>a+(it.total||0),0);
+          const pdfInvoiceVal = bill.invoiceValue || 0;
+          const valueDiff  = pdfInvoiceVal - itemTotalSum;
+          const valueMatch = !pdfInvoiceVal || Math.abs(valueDiff) <= 5; // ₹5 tolerance for rounding
+
+          const allMatch = casesMatch && btlsMatch && valueMatch;
           const bg  = allMatch ? 'rgba(39,174,96,.08)' : 'rgba(220,50,50,.1)';
           const col = allMatch ? 'var(--green)' : 'var(--red)';
 
@@ -1694,6 +1699,10 @@ function renderQueueCard(r, idx){
             ${!btlsMatch?`<div style="margin-top:2px;font-size:.68rem;color:orange">
               ⚠️ Bottles: extracted ${itemBtls} vs PDF ${pdfLineBtls} (diff: ${Math.abs(btlsDiff)})
             </div>`:''}
+            <div style="margin-top:4px;padding-top:4px;border-top:1px solid ${allMatch?'rgba(39,174,96,.15)':'rgba(220,50,50,.2)'};font-size:.68rem;color:${valueMatch?'var(--t2)':'var(--red)'}">
+              ${valueMatch?'✅':'⚠️'} Invoice value: <strong>₹${itemTotalSum.toLocaleString('en-IN',{minimumFractionDigits:2})}</strong>
+              ${pdfInvoiceVal?` vs PDF <strong>₹${pdfInvoiceVal.toLocaleString('en-IN',{minimumFractionDigits:2})}</strong>${!valueMatch?` (diff ₹${Math.abs(valueDiff).toLocaleString('en-IN',{minimumFractionDigits:2})})`:''}`:''}
+            </div>
           </div>`;
         })()}
         <details>
@@ -4029,10 +4038,23 @@ function renderPurchaseList(){
         </div>
         </div>
       </div>
+      <div onclick="const nx=this.nextElementSibling;const wasOpen=nx.style.display==='';nx.style.display=wasOpen?'none':'';this.querySelector('.mrp-tog').textContent=wasOpen?'▶':'▼'; if(!wasOpen) setTimeout(()=>updateMRPRoundingSum(${b.id}),0)"
+        style="cursor:pointer;font-size:.72rem;color:var(--gold2);padding:4px 0 8px;display:flex;align-items:center;gap:6px;user-select:none">
+        <span class="mrp-tog">▶</span>
+        <span>📊 Enter MRP Rounding per Brand${b.mrpRounding?` — target ₹${fmtR(b.mrpRounding)}`:''}</span>
+      </div>
+      <div style="display:none" id="mrp-panel-${b.id}">
+        ${renderMRPRoundingTable(b)}
+      </div>
       <div style="margin-top:8px;padding:8px 10px;background:var(--s2);border-radius:7px;border:1px solid var(--border);font-size:.72rem">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px 12px">
           ${b.invoiceValue?`<span style="color:var(--t3)">Invoice Value:</span><span style="text-align:right;font-weight:600">${fmtR(b.invoiceValue)}</span>`:''}
-          ${b.mrpRounding?`<span style="color:var(--t3)">MRP Rounding:</span><span style="text-align:right">${fmtR(b.mrpRounding)}</span>`:''}
+          ${b.mrpRounding?(()=>{
+            const allocated = Object.values(b.mrpRoundingByItem||{}).reduce((a,v)=>a+(parseFloat(v)||0),0);
+            const pct = b.mrpRounding ? Math.round((allocated/b.mrpRounding)*100) : 0;
+            const done = Math.abs(allocated - b.mrpRounding) < 0.5;
+            return `<span style="color:var(--t3)">MRP Rounding:</span><span style="text-align:right">${fmtR(b.mrpRounding)} ${allocated?`<small style="color:${done?'var(--green)':'#e67e22'}">(${done?'✅ allocated':pct+'% allocated'})</small>`:'<small style="color:var(--t3)">(not yet allocated)</small>'}</span>`;
+          })():''}
           <span style="color:var(--t3)">Net Invoice:</span><span style="text-align:right;font-weight:700;color:var(--gold2)">${fmtR(b.netInvoice||0)}</span>
           ${b.exciseCess?`<span style="color:var(--t3)">Special Excise Cess:</span><span style="text-align:right;color:var(--gold2)">${fmtR(b.exciseCess)}</span>`:''}
           ${b.tcs?`<span style="color:var(--t3)">TCS:</span><span style="text-align:right">${fmtR(b.tcs)}</span>`:''}
@@ -4045,6 +4067,145 @@ function renderPurchaseList(){
       </div>
       <button class="btn btn-xs btn-out" onclick="delBill(${b.id})" style="margin-top:8px;color:var(--red)">🗑 Delete Bill</button>
     </div>`;}).join('');
+}
+
+// ── MRP Rounding Manual Entry (per-brand allocation) ─────────────────────────
+// The PDF only shows ONE aggregate "MRP Rounding Off" figure for the whole bill —
+// TSBCL doesn't break it down per brand, and it isn't derivable from the price
+// list either. This panel lets the user manually allocate the rounding across
+// brands and cross-checks their running total against the bill's stated figure
+// as they type — no need to save first and check later.
+
+function renderMRPRoundingTable(b){
+  const target = b.mrpRounding || 0;
+  const stored = b.mrpRoundingByItem || {};
+  const rows = (b.items||[]).map((it,i)=>{
+    const isCodeOnly = /^\d{4}\s*\(\d+\)\s*$/.test((it.brandName||'').trim());
+    const displayName = isCodeOnly
+      ? (it.brandName||it.brandNum||'—')
+      : (it.brandName||it.brandNum||'—').replace(/^\d{4}\s*\(\d+\)\s*/,'').trim()||it.brandName;
+    const val = stored[i] !== undefined ? stored[i] : '';
+    return `<tr>
+      <td style="font-size:.72rem;max-width:150px">
+        <div style="font-weight:500">${esc(displayName)}</div>
+        <div style="color:var(--t3);font-size:.62rem">${esc(it.bnum||it.brandNum||'')} · ${it.packSize||''}</div>
+      </td>
+      <td class="num" style="font-size:.7rem;color:var(--t3)">${fmtR(it.total)}</td>
+      <td class="num">
+        <input class="fc" type="number" step="0.01"
+          style="width:80px;padding:3px 6px;text-align:right;font-size:.75rem"
+          value="${val}" placeholder="0.00"
+          id="mrpr-${b.id}-${i}"
+          oninput="updateMRPRoundingSum(${b.id})"
+          onblur="saveMRPRoundingValue(${b.id},${i},this.value)">
+      </td>
+    </tr>`;
+  }).join('');
+
+  return `<div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Brand</th><th class="num">Item Total ₹</th><th class="num">MRP Rounding ₹</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot>
+        <tr style="background:var(--s3);font-weight:700;border-top:2px solid var(--border)">
+          <td colspan="2" style="padding:5px 8px;text-align:right;font-size:.72rem">Entered Total →</td>
+          <td class="num" id="mrpr-sum-${b.id}" style="padding:5px 6px;font-size:.8rem">₹0.00</td>
+        </tr>
+        <tr style="background:${target?'var(--s2)':''}">
+          <td colspan="2" style="padding:5px 8px;text-align:right;font-size:.72rem;color:var(--t3)">PDF Target (MRP Rounding Off):</td>
+          <td class="num" style="padding:5px 6px;font-size:.78rem;color:var(--gold2);font-weight:600">${target?fmtR(target):'—'}</td>
+        </tr>
+        <tr id="mrpr-status-row-${b.id}">
+          <td colspan="3" style="padding:6px 8px;text-align:center;font-size:.72rem" id="mrpr-status-${b.id}"></td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end">
+    <button class="btn btn-xs" onclick="autoFillMRPRoundingProportional(${b.id})">⚡ Auto-fill Proportionally</button>
+    <button class="btn btn-xs btn-out" style="color:var(--red)" onclick="clearMRPRounding(${b.id})">✕ Clear All</button>
+  </div>`;
+}
+
+function updateMRPRoundingSum(billId){
+  const bills = ga('bills');
+  const b = bills.find(x=>x.id===billId);
+  if(!b) return;
+  let sum = 0;
+  (b.items||[]).forEach((_,i)=>{
+    const v = parseFloat(document.getElementById(`mrpr-${billId}-${i}`)?.value);
+    if(!isNaN(v)) sum += v;
+  });
+  const sumEl = document.getElementById(`mrpr-sum-${billId}`);
+  if(sumEl) sumEl.textContent = '₹'+sum.toLocaleString('en-IN',{minimumFractionDigits:2});
+
+  const target = b.mrpRounding || 0;
+  const diff = target - sum;
+  const statusEl = document.getElementById(`mrpr-status-${billId}`);
+  if(statusEl && target){
+    const matched = Math.abs(diff) < 0.5;
+    statusEl.innerHTML = matched
+      ? `<span style="color:var(--green);font-weight:600">✅ Matches PDF target exactly</span>`
+      : `<span style="color:${Math.abs(diff)>target*0.1?'var(--red)':'#e67e22'};font-weight:600">
+           ${diff>0?'⬆':'⬇'} ₹${Math.abs(diff).toLocaleString('en-IN',{minimumFractionDigits:2})} ${diff>0?'remaining to allocate':'over-allocated'}
+         </span>`;
+    if(sumEl) sumEl.style.color = matched ? 'var(--green)' : (Math.abs(diff)>target*0.1 ? 'var(--red)' : '#e67e22');
+  }
+}
+
+function saveMRPRoundingValue(billId, itemIdx, val){
+  const bills = ga('bills');
+  const b = bills.find(x=>x.id===billId);
+  if(!b) return;
+  if(!b.mrpRoundingByItem) b.mrpRoundingByItem = {};
+  const v = parseFloat(val);
+  if(!isNaN(v) && v !== 0) b.mrpRoundingByItem[itemIdx] = v;
+  else delete b.mrpRoundingByItem[itemIdx];
+  sa('bills', bills);
+}
+
+function autoFillMRPRoundingProportional(billId){
+  const bills = ga('bills');
+  const b = bills.find(x=>x.id===billId);
+  if(!b) return;
+  const target = b.mrpRounding || 0;
+  const itemTotalSum = (b.items||[]).reduce((a,it)=>a+(it.total||0),0);
+  if(!target || !itemTotalSum) return toast('No MRP rounding target or item totals to distribute across');
+
+  if(!b.mrpRoundingByItem) b.mrpRoundingByItem = {};
+  let running = 0;
+  (b.items||[]).forEach((it,i)=>{
+    const share = Math.round((target * (it.total||0) / itemTotalSum) * 100) / 100;
+    b.mrpRoundingByItem[i] = share;
+    running += share;
+    const inp = document.getElementById(`mrpr-${billId}-${i}`);
+    if(inp) inp.value = share.toFixed(2);
+  });
+  // Fix rounding drift on the last item so the sum matches exactly
+  const drift = Math.round((target - running) * 100) / 100;
+  if(Math.abs(drift) > 0.001 && b.items.length){
+    const lastIdx = b.items.length - 1;
+    b.mrpRoundingByItem[lastIdx] = Math.round((b.mrpRoundingByItem[lastIdx] + drift) * 100) / 100;
+    const inp = document.getElementById(`mrpr-${billId}-${lastIdx}`);
+    if(inp) inp.value = b.mrpRoundingByItem[lastIdx].toFixed(2);
+  }
+  sa('bills', bills);
+  updateMRPRoundingSum(billId);
+  toast('⚡ Distributed proportionally by item value — adjust individual brands if you know the actual split');
+}
+
+function clearMRPRounding(billId){
+  const bills = ga('bills');
+  const b = bills.find(x=>x.id===billId);
+  if(!b) return;
+  b.mrpRoundingByItem = {};
+  sa('bills', bills);
+  (b.items||[]).forEach((_,i)=>{
+    const inp = document.getElementById(`mrpr-${billId}-${i}`);
+    if(inp) inp.value = '';
+  });
+  updateMRPRoundingSum(billId);
+  toast('Cleared all MRP rounding entries for this bill');
 }
 
 function delBill(id){
