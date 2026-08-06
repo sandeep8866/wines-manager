@@ -253,7 +253,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div id="store-btns" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
   <div id="store-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
   <div id="topbar-date" style="white-space:nowrap"></div>
-  <div id="app-ver-badge" title="Built: 30 Jul 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v12.5 · 300726</div>
+  <div id="app-ver-badge" title="Built: 30 Jul 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v12.11 · 300726</div>
 </div>
 
 <!-- MAIN -->
@@ -1033,7 +1033,7 @@ const STORE_INFO = loadStoreInfo();
 // Safe STORE_INFO accessor — handles both numeric and string keys
 function SI(id){ return STORE_INFO[id] || STORE_INFO[String(id)] || STORE_INFO[Number(id)] || {name:'Store '+id,short:'Store '+id,code:'',lic:''}; }
 
-const APP_VERSION = 'v12.5';
+const APP_VERSION = 'v12.11';
 const APP_BUILD   = '30 Jul 2026';
 let CS = getStoreIds()[0]; // current store — first store by default
 let mnRowCount = 1;
@@ -2219,48 +2219,51 @@ async function extractPDF(file){
   const fbItems    = parseICDCItemsFallback(allPageLines);
   const coordItems = extractItemRows(rows);
 
-  // Merge fallback + coordinate parsers
-  const merged = [...fbItems];
-  const seenFb = new Set(fbItems.map(it => `${it.brandNum}_${it.total}`));
-  for(const ci of coordItems){
-    const k = `${ci.brandNum}_${ci.total}`;
-    if(!seenFb.has(k)) merged.push(ci);
-  }
+  // Use fallback parser primarily; coordinate parser only if fallback finds nothing
+  bill.items = fbItems.length > 0 ? fbItems : coordItems;
 
   // Dedup
   const seenMerged = new Set();
-  bill.items = merged.filter(it => {
+  bill.items = bill.items.filter(it => {
     const k = `${it.brandNum}_${it.total}`;
     if(seenMerged.has(k)) return false;
     seenMerged.add(k); return true;
   });
 
   // ── Column-based parser as final fallback ─────────────────────────────────
-  // If merged items still show a case count mismatch vs the PDF total,
+  // If fallback items show a case count mismatch vs the PDF total,
   // try the column-based parser which works even on fully-fragmented PDFs
   const itemCasesSum = bill.items.reduce((a,it)=>a+(it.casesDel||0),0);
+  const fbBrandCount = bill.items.length;
   const pdfCases = bill.pdfLineCases || bill.invoiceQtyCases || bill.totalCases || 0;
   if(pdfCases > 0 && Math.abs(pdfCases - itemCasesSum) > 1){
-    // rawItems y already encodes page order via yOffset — pass null for pageHeights
     const colItems = parseByColumns(rawItems, null);
     if(colItems.length > 0){
       const colCases = colItems.reduce((a,it)=>a+(it.casesDel||0),0);
-      // Use column parser if it's closer to PDF total
+      const colBrandCount = colItems.length;
+
       const mergedDiff = Math.abs(pdfCases - itemCasesSum);
-      const colDiff    = Math.abs(pdfCases - colCases);
-      if(colDiff < mergedDiff){
-        // Merge: column parser items + any extra from merged not in column set
-        const seenCol = new Set(colItems.map(it=>`${it.brandNum}_${it.total}`));
-        const extras  = bill.items.filter(it=>!seenCol.has(`${it.brandNum}_${it.total}`));
-        bill.items = [...colItems, ...extras];
-        // Final dedup
-        const seenFinal = new Set();
-        bill.items = bill.items.filter(it=>{
-          const k=`${it.brandNum}_${it.total}`;
-          if(seenFinal.has(k)) return false;
-          seenFinal.add(k); return true;
-        });
-        console.log(`[Column parser] Used for ${bill.icdc}: ${colCases} cases vs merged ${itemCasesSum} (PDF: ${pdfCases})`);
+      const colDiff     = Math.abs(pdfCases - colCases);
+
+      // Sanity check on brand count — column parser's brand count should be
+      // reasonably close to the fallback's (catches cases where the column
+      // parser mis-detects a completely wrong column and inflates/deflates count)
+      const brandCountRatio = fbBrandCount > 0
+        ? colBrandCount / fbBrandCount
+        : 1;
+      const brandCountSane = brandCountRatio >= 0.5 && brandCountRatio <= 2.5;
+
+      // Use column parser only if: it's closer to PDF total AND brand count is sane
+      // AND either exact match or reasonably close (within 25% or 10 cases, whichever bigger)
+      const colCloseEnough = colDiff <= Math.max(10, pdfCases * 0.25);
+      const colAccurate = colDiff < mergedDiff && brandCountSane && colCloseEnough;
+
+      if(colAccurate){
+        bill.items = colItems;
+        bill._parserUsed = 'column';
+        console.log(`[Column parser] Replaced for ${bill.icdc}: ${colCases} cases (${colBrandCount} brands) vs fallback ${itemCasesSum} cases (${fbBrandCount} brands) — PDF: ${pdfCases}`);
+      } else {
+        console.log(`[Column parser] Rejected for ${bill.icdc}: col=${colCases}(${colBrandCount}br) fb=${itemCasesSum}(${fbBrandCount}br) PDF=${pdfCases} — sane=${brandCountSane} close=${colCloseEnough}`);
       }
     }
   }
@@ -2301,9 +2304,26 @@ async function extractPDF(file){
 //   Total:      X 490-570  (line total)
 
 function parseByColumns(rawItems, pageHeights){
-  // rawItems are already sorted: y=0 is top, increasing downward, yOffset encodes page
-  // So simple ascending y sort = document order (top to bottom, page by page)
+  // ── Header-anchor column detection ──────────────────────────────────────
+  // ICDC bills from different print jobs can have different absolute X
+  // coordinates for the same logical column (verified: cases column can be
+  // at X≈363 in some bills and X≈388 in others, even at the same page size).
+  // Instead of hardcoded X ranges, we locate each column dynamically by
+  // finding the table header labels ("Qty(Cases.", "Qty(Bottles.", "Number")
+  // and reading data relative to those anchor positions — reliable across
+  // all bill formats since the header row is always present verbatim.
+
   const sorted = [...rawItems].sort((a,b) => a.y - b.y || a.x - b.x);
+
+  // Locate header anchors (first occurrence of each label)
+  let casesHdrX = null, btlsHdrX = null, brandHdrX = null;
+  for(const it of sorted){
+    const t = it.str.trim();
+    if(casesHdrX === null && /^Qty\(Cases/i.test(t)) casesHdrX = it.x;
+    if(btlsHdrX  === null && /^Qty\(Bottles/i.test(t)) btlsHdrX = it.x;
+    if(brandHdrX === null && t === 'Number') brandHdrX = it.x;
+  }
+  if(casesHdrX === null || brandHdrX === null) return []; // can't anchor — bail
 
   function colItems(xMin, xMax, pattern){
     return sorted.filter(it => {
@@ -2316,18 +2336,35 @@ function parseByColumns(rawItems, pageHeights){
     });
   }
 
-  const brandCodes = colItems(60,  90,  /^\d{4}$/);
-  const packSizes  = colItems(305, 345, /^\d+\s*\/\s*\d+\s*ml$/i);
-  const casesCol   = colItems(365, 415, /^\d{1,4}$/);
-  const btlsCol    = colItems(420, 460, /^\d{1,3}$/);
-  const ptypeCol   = colItems(235, 275, /^(IML|Beer|Duty\s*Paid)$/i);
-  const ppackCol   = colItems(280, 305, /^[GPC]$/);
-  const totalsAll  = colItems(490, 580, /^[\d,]+\.\d{2}$/);
-  // Filter out large financial summary numbers (> 5 lakh = 500000)
-  const totalsCol  = totalsAll.filter(it => parseFloat(it.str.replace(/,/g,'')) < 800000);
+  // Brand codes: within ±20 of the "Number" header
+  const brandCodes = colItems(brandHdrX - 20, brandHdrX + 20, /^\d{4}$/);
+  const nBrands = brandCodes.length;
+  if(nBrands === 0) return [];
+  const n = nBrands;
 
-  const n = brandCodes.length;
-  if(n === 0) return [];
+  // Cases/Bottles: header X to header X+30 (data is right-aligned, sits to the right)
+  const casesCol = colItems(casesHdrX - 5, casesHdrX + 30, /^\d{1,4}$/).slice(0, n);
+  const btlsCol  = btlsHdrX !== null
+    ? colItems(btlsHdrX - 5, btlsHdrX + 30, /^\d{1,4}$/).slice(0, n)
+    : [];
+
+  // Pack size: locate via pattern match near the brand code column (offset ~250-270)
+  // Since pack size column position also varies, detect by pattern search in the
+  // same general region as cases (pack size sits left of cases column)
+  const packSizeAll = sorted.filter(it => /^\d+\s*\/\s*\d+\s*ml$/i.test(it.str.trim()));
+  const packSizes = packSizeAll.slice(0, n);
+
+  // Product type (IML/Beer/Duty Paid) and pack type (G/P/C): search full width,
+  // take first n occurrences in document order
+  const ptypeCol = sorted.filter(it => /^(IML|Beer|Duty\s*Paid)$/i.test(it.str.trim())).slice(0, n);
+  const ppackCol = sorted.filter(it => /^[GPC]$/.test(it.str.trim())).slice(0, n);
+
+  // Line totals: rightmost numeric column, Indian format, exclude large summary values
+  const totalsAll = sorted.filter(it => /^[\d,]+\.\d{2}$/.test(it.str.trim())
+    && it.x > (casesHdrX + 100)); // totals are well to the right of cases
+  const totalsCol = totalsAll
+    .filter(it => parseFloat(it.str.replace(/,/g,'')) < 800000)
+    .slice(0, n);
 
   const items = [];
   const seen  = new Set();
@@ -2347,20 +2384,18 @@ function parseByColumns(rawItems, pageHeights){
     if(seen.has(key)) continue;
     seen.add(key);
 
-    // Parse pack size
-    const pqM    = pack.match(/(\d+)\/(\d+)ml/i);
+    const pqM     = pack.match(/(\d+)\/(\d+)ml/i);
     const packQty = pqM ? parseInt(pqM[1]) : 0;
     const sizeML  = pqM ? parseInt(pqM[2]) : 0;
 
-    // Get brand name from TSBCL / DP lookup
-    const bn      = code.replace(/^0+/,'');
-    let   pd      = null;
+    const bn = code.replace(/^0+/,'');
+    let   pd = null;
     try { pd = getPriceData(bn, sizeML); } catch(e){}
     const brandName = (pd && pd[6]) ? pd[6] : code;
     const brandNum  = `${code} (${packQty})`;
 
-    // Btl rate from TSBCL
-    const btlRate = (pd && pd[2]) ? pd[2] : (packQty > 0 ? total / ((casesN * packQty) + btlsN) : 0);
+    const btlRate = (pd && pd[2]) ? pd[2] : (packQty > 0 && (casesN*packQty+btlsN) > 0
+      ? total / ((casesN * packQty) + btlsN) : 0);
 
     items.push({
       brandNum, brandName,
@@ -2369,7 +2404,7 @@ function parseByColumns(rawItems, pageHeights){
       casesDel: casesN, btlsDel: btlsN,
       btlRate: Math.round(btlRate * 100) / 100,
       unitRate: Math.round(btlRate * 100) / 100,
-      caseRate: packQty > 0 ? Math.round((total / casesN) * 100) / 100 : 0,
+      caseRate: casesN > 0 ? Math.round((total / casesN) * 100) / 100 : 0,
       total
     });
   }
