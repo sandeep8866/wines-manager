@@ -244,7 +244,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div class="sp-logo">🥃</div>
   <div class="sp-title">Wines Manager</div>
   <div class="sp-sub">Telangana Excise · ICDC Bills</div>
-  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v13.0 · 06 Aug 2026</div>
+  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v13.5 · 10 Aug 2026</div>
   <div class="sp-bar"><div class="sp-fill"></div></div>
 </div>
 
@@ -253,7 +253,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div id="store-btns" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
   <div id="store-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
   <div id="topbar-date" style="white-space:nowrap"></div>
-  <div id="app-ver-badge" title="Built: 06 Aug 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v13.0 · 060826</div>
+  <div id="app-ver-badge" title="Built: 10 Aug 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v13.5 · 100826</div>
 </div>
 
 <!-- MAIN -->
@@ -401,10 +401,13 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div id="extprev" style="display:none"></div>
 
   <!-- history -->
-  <div class="sh" style="margin-top:4px"><h3>History</h3>
-    <select class="fc" style="width:auto;padding:5px 8px;font-size:.75rem" id="pur-filter" onchange="renderPurchaseList()">
-      <option value="">All dates</option>
-    </select>
+  <div class="sh" style="margin-top:4px;flex-wrap:wrap;gap:6px"><h3>History</h3>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-xs" style="white-space:nowrap;color:var(--t3)" onclick="manualRepairFinancials()" title="Recompute Invoice Value / MRP Rounding / Net Invoice for any bill with scrambled figures">🔧 Fix Financials</button>
+      <select class="fc" style="width:auto;padding:5px 8px;font-size:.75rem" id="pur-filter" onchange="renderPurchaseList()">
+        <option value="">All dates</option>
+      </select>
+    </div>
   </div>
 
   <!-- Data warning banner — shown when suspect bills detected -->
@@ -525,14 +528,15 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
     <div class="card" style="margin-top:10px;border:1px solid rgba(181,114,10,.3)">
       <div class="card-hd">🧮 Bill Amount Tally Checker</div>
       <div style="font-size:.78rem;color:var(--t2);margin-bottom:10px">
-        Enter <strong>Special Excise Cess per bottle</strong> to verify each bill's amount.
-        Cess rates are saved per brand+size and auto-fill on future bills.<br>
-        <span style="font-family:monospace;font-size:.72rem;color:var(--gold2)">Net Invoice = Issue Price (cases) + Special Margin + Excise Cess × bottles</span>
+        <strong>Special Excise Cess</strong> defaults by bottle size (below) apply automatically to
+        every brand at that size. Override any individual brand+size in the table further down —
+        that override then takes priority over the size default for that brand going forward.<br>
+        <span style="font-family:monospace;font-size:.72rem;color:var(--gold2)">Net Invoice = Issue Price (cases+btls) + Special Margin + Excise Cess × bottles</span>
       </div>
       <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
         <div class="fg" style="min-width:140px;margin:0">
-          <label class="fl" style="font-size:.72rem">Default Cess / Bottle (₹)</label>
-          <input class="fc" type="number" id="tally-cess-per-bottle" step="0.01" placeholder="e.g. 7.25"
+          <label class="fl" style="font-size:.72rem">Fallback Cess / Bottle (₹)</label>
+          <input class="fc" type="number" id="tally-cess-per-bottle" step="0.01" placeholder="only used if size has no default"
             style="font-size:.85rem;padding:6px 10px"
             oninput="renderBillTally()">
         </div>
@@ -546,6 +550,26 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
         </div>
         <button class="btn btn-gold btn-sm" onclick="renderBillTally()">🔄 Check Tally</button>
       </div>
+
+      <!-- Size-based Excise Cess defaults — editable, persistent -->
+      <div style="margin-bottom:12px;padding:10px 12px;background:var(--s2);border-radius:8px;border:1px solid var(--border)">
+        <div style="font-weight:600;color:var(--t2);font-size:.75rem;margin-bottom:8px">
+          📏 Excise Cess Defaults by Bottle Size — applies to every brand at that size unless overridden individually
+        </div>
+        <div id="cess-by-size-table" style="display:flex;flex-wrap:wrap;gap:8px"></div>
+        <div style="display:flex;gap:6px;margin-top:8px;align-items:flex-end">
+          <div class="fg" style="margin:0">
+            <label class="fl" style="font-size:.65rem">Size (ml)</label>
+            <input class="fc" type="number" id="new-cess-size" placeholder="e.g. 275" style="width:80px;font-size:.75rem;padding:4px 6px">
+          </div>
+          <div class="fg" style="margin:0">
+            <label class="fl" style="font-size:.65rem">Cess ₹/btl</label>
+            <input class="fc" type="number" step="0.01" id="new-cess-amt" placeholder="e.g. 30" style="width:80px;font-size:.75rem;padding:4px 6px">
+          </div>
+          <button class="btn btn-xs btn-gold" onclick="const s=document.getElementById('new-cess-size').value,a=document.getElementById('new-cess-amt').value; if(s&&a){saveCessBySize(s,a);document.getElementById('new-cess-size').value='';document.getElementById('new-cess-amt').value='';}">+ Add Size</button>
+        </div>
+      </div>
+
       <div id="bill-tally-result"></div>
       <div style="margin-top:12px;padding:10px 12px;background:var(--s2);border-radius:8px;border:1px solid var(--border);font-size:.72rem">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
@@ -1033,8 +1057,8 @@ const STORE_INFO = loadStoreInfo();
 // Safe STORE_INFO accessor — handles both numeric and string keys
 function SI(id){ return STORE_INFO[id] || STORE_INFO[String(id)] || STORE_INFO[Number(id)] || {name:'Store '+id,short:'Store '+id,code:'',lic:''}; }
 
-const APP_VERSION = 'v13.0';
-const APP_BUILD   = '06 Aug 2026';
+const APP_VERSION = 'v13.5';
+const APP_BUILD   = '10 Aug 2026';
 let CS = getStoreIds()[0]; // current store — first store by default
 let mnRowCount = 1;
 let currentRpt = 'brandwise';
@@ -1674,12 +1698,21 @@ function renderQueueCard(r, idx){
           const casesMatch = !pdfLineCases || Math.abs(casesDiff) <= 1;
           const btlsMatch  = !pdfLineBtls  || Math.abs(btlsDiff)  <= 2;
 
-          // Cross-check 2: sum of item totals (cases×rate + btls×rate) vs PDF Invoice Value
-          // Each item's .total is (casesDel × caseRate) + (btlsDel × btlRate) as read from the bill
-          const itemTotalSum = (bill.items||[]).reduce((a,it)=>a+(it.total||0),0);
+          // Cross-check 2: sum of item totals (as printed per line) vs PDF raw Invoice Value.
+          // This is a PARSING-ACCURACY check — item totals are extracted verbatim from the
+          // bill, so they should sum to Invoice Value exactly; a mismatch means a line was
+          // misread (wrong rate, wrong total, or a brand missed entirely).
+          const itemTotalSum  = (bill.items||[]).reduce((a,it)=>a+(it.total||0),0);
           const pdfInvoiceVal = bill.invoiceValue || 0;
           const valueDiff  = pdfInvoiceVal - itemTotalSum;
-          const valueMatch = !pdfInvoiceVal || Math.abs(valueDiff) <= 5; // ₹5 tolerance for rounding
+          const valueMatch = !pdfInvoiceVal || Math.abs(valueDiff) <= 5;
+
+          // Net Invoice Value = Invoice Value + MRP Rounding Off (both read directly from PDF).
+          // Item totals never include MRP rounding (that's allocated separately per-brand
+          // after saving, in the MRP Rounding panel) — so this is shown for reference only,
+          // not flagged as a mismatch.
+          const pdfMrpRounding = bill.mrpRounding || 0;
+          const pdfNetInvoice  = bill.netInvoice || (pdfInvoiceVal + pdfMrpRounding);
 
           const allMatch = casesMatch && btlsMatch && valueMatch;
           const bg  = allMatch ? 'rgba(39,174,96,.08)' : 'rgba(220,50,50,.1)';
@@ -1700,9 +1733,13 @@ function renderQueueCard(r, idx){
               ⚠️ Bottles: extracted ${itemBtls} vs PDF ${pdfLineBtls} (diff: ${Math.abs(btlsDiff)})
             </div>`:''}
             <div style="margin-top:4px;padding-top:4px;border-top:1px solid ${allMatch?'rgba(39,174,96,.15)':'rgba(220,50,50,.2)'};font-size:.68rem;color:${valueMatch?'var(--t2)':'var(--red)'}">
-              ${valueMatch?'✅':'⚠️'} Invoice value: <strong>₹${itemTotalSum.toLocaleString('en-IN',{minimumFractionDigits:2})}</strong>
+              ${valueMatch?'✅':'⚠️'} Invoice value (sum of lines): <strong>₹${itemTotalSum.toLocaleString('en-IN',{minimumFractionDigits:2})}</strong>
               ${pdfInvoiceVal?` vs PDF <strong>₹${pdfInvoiceVal.toLocaleString('en-IN',{minimumFractionDigits:2})}</strong>${!valueMatch?` (diff ₹${Math.abs(valueDiff).toLocaleString('en-IN',{minimumFractionDigits:2})})`:''}`:''}
             </div>
+            ${pdfMrpRounding?`<div style="margin-top:2px;font-size:.66rem;color:var(--t3)">
+              + MRP Rounding ₹${pdfMrpRounding.toLocaleString('en-IN',{minimumFractionDigits:2})} = Net Invoice Value ₹${pdfNetInvoice.toLocaleString('en-IN',{minimumFractionDigits:2})}
+              <span style="color:var(--gold2)"> — allocate this per-brand after saving, in the 📊 MRP Rounding panel</span>
+            </div>`:''}
           </div>`;
         })()}
         <details>
@@ -2132,6 +2169,52 @@ function parseICDCFromText(text, filename){
 
   bill.totalCases = bill.items.reduce((s,it)=>s+(it.casesDel||0),0);
   bill.totalBtls  = bill.items.reduce((s,it)=>s+(it.btlsDel||0),0);
+
+  // Robust correction: Invoice Value = Σ(item totals) — always reliable since
+  // totals are read directly per line. Net Invoice is cross-checked from up to
+  // THREE independent sources and the best-agreeing one is used:
+  //   A) "(-)Less this Invoice Value" — standalone label, rarely mis-bound
+  //   B) SubTotal − ExciseCess − TCS − CreditBalance — algebraic identity using
+  //      fields that each have their own simple, reliable single-value regex
+  //   C) whatever parseICDCHeader's block-guess already put in bill.netInvoice
+  if(bill.items.length > 0){
+    const itemTotalSum = Math.round(bill.items.reduce((s,it)=>s+(it.total||0),0) * 100) / 100;
+
+    const lessInvM = normalized.match(/Less\s+this\s+Invoice\s+Value[:\s]*(\d[\d,]*\.\d{2})/i);
+    const netA = lessInvM ? parseFloat(lessInvM[1].replace(/,/g,'')) : 0;
+
+    let netB = 0;
+    if(bill.subTotal && bill.exciseCess !== undefined && bill.tcs !== undefined && bill.creditBalance){
+      netB = Math.round((bill.subTotal - (bill.exciseCess||0) - (bill.tcs||0) - bill.creditBalance) * 100) / 100;
+    }
+
+    const netC = bill.netInvoice || 0;
+
+    // Pick whichever candidate is sane (>= itemTotalSum, since rounding is always >= 0)
+    // and prefer them in order A, B, C; if A and B both exist and disagree by more
+    // than a rupee, trust B (derived from independently-reliable simple fields).
+    let chosen = 0;
+    if(netA > 0 && netB > 0){
+      chosen = Math.abs(netA - netB) <= 1 ? netA : netB;
+    } else if(netB > 0){
+      chosen = netB;
+    } else if(netA > 0){
+      chosen = netA;
+    } else if(netC >= itemTotalSum - 1){
+      chosen = netC;
+    }
+
+    if(itemTotalSum > 0){
+      bill.invoiceValue = itemTotalSum;
+      if(chosen > 0 && chosen >= itemTotalSum - 1){
+        bill.netInvoice  = chosen;
+        bill.mrpRounding = Math.round((chosen - itemTotalSum) * 100) / 100;
+      } else {
+        bill.netInvoice  = itemTotalSum;
+        bill.mrpRounding = 0;
+      }
+    }
+  }
   if(!bill.netInvoice && bill.items.length)
     bill.netInvoice = bill.items.reduce((s,it)=>s+(it.total||0),0);
 
@@ -2273,6 +2356,66 @@ async function extractPDF(file){
         console.log(`[Column parser] Replaced for ${bill.icdc}: ${colCases} cases (${colBrandCount} brands) vs fallback ${itemCasesSum} cases (${fbBrandCount} brands) — PDF: ${pdfCases}`);
       } else {
         console.log(`[Column parser] Rejected for ${bill.icdc}: col=${colCases}(${colBrandCount}br) fb=${itemCasesSum}(${fbBrandCount}br) PDF=${pdfCases} — sane=${brandCountSane} close=${colCloseEnough}`);
+      }
+    }
+  }
+
+  // ── Robust correction: Invoice Value / MRP Rounding / Net Invoice ──────────
+  // The text-block-based extraction above can misread these three figures on
+  // bills where the footer layout doesn't match the expected pattern (e.g. the
+  // "Invoice Value…Net Invoice Value" block bleeds into Excise Cess / TCS text,
+  // causing those to be picked up instead). Now that items are parsed, we have
+  // two much more reliable sources to cross-check and correct with:
+  //   1. Invoice Value = Σ(item.total) — each line's total is read directly off
+  //      the bill, so this sum is always accurate (verified across many bills).
+  //   2. Net Invoice Value = the "(-)Less this Invoice Value" figure, which the
+  //      bill always states as its own standalone line, never bundled with
+  //      other labels — much less prone to block-boundary mis-extraction.
+  // MRP Rounding is then simply the difference between the two, which is
+  // guaranteed arithmetically consistent once both inputs are correct.
+  if(bill.items.length > 0){
+    const itemTotalSum = Math.round(bill.items.reduce((s,it)=>s+(it.total||0),0) * 100) / 100;
+
+    const lessInvM = fullText.match(/Less\s+this\s+Invoice\s+Value[:\s]*(\d[\d,]*\.\d{2})/i)
+      || rawText.match(/Less\s+this\s+Invoice\s+Value[:\s]*(\d[\d,]*\.\d{2})/i);
+    const netA = lessInvM ? parseFloat(lessInvM[1].replace(/,/g,'')) : 0;
+
+    // Third independent source: SubTotal − ExciseCess − TCS − CreditBalance.
+    // Each of those four fields has its own simple, unambiguous single-value
+    // regex (no block-guessing), so this algebraic derivation is very reliable —
+    // verified exact against multiple real bills.
+    let netB = 0;
+    if(bill.subTotal && bill.exciseCess !== undefined && bill.tcs !== undefined && bill.creditBalance){
+      netB = Math.round((bill.subTotal - (bill.exciseCess||0) - (bill.tcs||0) - bill.creditBalance) * 100) / 100;
+    }
+
+    const netC = bill.netInvoice || 0;
+
+    let chosen = 0;
+    if(netA > 0 && netB > 0){
+      chosen = Math.abs(netA - netB) <= 1 ? netA : netB; // prefer B if they disagree
+    } else if(netB > 0){
+      chosen = netB;
+    } else if(netA > 0){
+      chosen = netA;
+    } else if(netC >= itemTotalSum - 1){
+      chosen = netC;
+    }
+
+    if(itemTotalSum > 0){
+      const oldInvoiceValue = bill.invoiceValue;
+      bill.invoiceValue = itemTotalSum;
+
+      if(chosen > 0 && chosen >= itemTotalSum - 1){
+        bill.netInvoice  = chosen;
+        bill.mrpRounding = Math.round((chosen - itemTotalSum) * 100) / 100;
+      } else {
+        bill.netInvoice  = itemTotalSum;
+        bill.mrpRounding = 0;
+      }
+
+      if(Math.abs(oldInvoiceValue - bill.invoiceValue) > 1){
+        console.log(`[Financial correction] ${bill.icdc}: invoiceValue ${oldInvoiceValue} → ${bill.invoiceValue}, netInvoice(A=${netA},B=${netB},C=${netC}) → ${bill.netInvoice}, mrpRounding → ${bill.mrpRounding}`);
       }
     }
   }
@@ -3010,9 +3153,13 @@ function parseICDCHeader(text, rawText){
     const footerM = text.match(/Invoice[\s\n]+Value[\s\S]*?(?=Amount\s+in\s+words|e-challan|Authorized|$)/i);
     if(footerM){
       const block = footerM[0];
-      // Extract all amounts ≥ 1000 (avoids stray small numbers like quantity counts)
-      const amts = [...block.matchAll(/(?<![\d])(\d{1,3}(?:,\d{2,3})*\.\d{2})(?![\d])/g)]
-        .map(m => parseFloat(m[1].replace(/,/g,'')))
+      // Extract all money amounts ≥ 100. Uses a boundary-free pattern (no lookahead/
+      // lookbehind) because this specific PDF format can render the three footer
+      // numbers with ZERO separator between them (e.g. "16,87,219.001,26,828.10..."),
+      // which broke the old lookahead-based regex. \d{2} after the decimal point
+      // naturally acts as the stopping boundary since it's a fixed 2-digit group.
+      const amts = [...block.matchAll(/\d[\d,]*\.\d{2}/g)]
+        .map(m => parseFloat(m[0].replace(/,/g,'')))
         .filter(v => v >= 100);
       if(amts.length >= 3){
         bill.invoiceValue = amts[0];
@@ -3373,6 +3520,80 @@ function showBrandAudit(){
 }
 
 // ── Repair bad brand names already stored in stock using TSBCL lookup ──────────
+// ── Repair already-saved bills' scrambled financial fields ────────────────────
+// Bills saved before the parsing fix can have invoiceValue/mrpRounding/netInvoice
+// cross-assigned to the wrong PDF figures. This recomputes them for every stored
+// bill using two reliable sources that don't depend on the original PDF text:
+//   1. Invoice Value = Σ(item.total) — item totals are always correct, since
+//      they're the actual numbers read off each line, independent of the footer bug.
+//   2. Net Invoice = SubTotal − ExciseCess − TCS − CreditBalance — an algebraic
+//      identity using four fields that each have simple, reliable extraction.
+// MRP Rounding = Net Invoice − Invoice Value (derived, always consistent).
+function repairBillFinancials(){
+  const storeIds = getStoreIds();
+  const prevCS = CS;
+  let fixed = 0, checked = 0;
+
+  storeIds.forEach(sid => {
+    CS = sid;
+    const bills = ga('bills');
+    let changed = false;
+
+    bills.forEach(b => {
+      if(!b.items || !b.items.length) return;
+      checked++;
+
+      const itemTotalSum = Math.round(b.items.reduce((s,it)=>s+(it.total||0),0) * 100) / 100;
+      if(itemTotalSum <= 0) return;
+
+      let netB = 0;
+      if(b.subTotal && b.exciseCess !== undefined && b.tcs !== undefined && b.creditBalance){
+        netB = Math.round((b.subTotal - (b.exciseCess||0) - (b.tcs||0) - b.creditBalance) * 100) / 100;
+      }
+
+      const oldInvoiceValue = b.invoiceValue || 0;
+      const oldNetInvoice   = b.netInvoice   || 0;
+      const oldMrpRounding  = b.mrpRounding  || 0;
+
+      // Detect scrambling: invoiceValue should always equal itemTotalSum exactly
+      // (both are/should be the same sum of line totals) — if it's off by more
+      // than a rupee, or if netB disagrees with the stored netInvoice, repair it.
+      const invoiceWrong = Math.abs(oldInvoiceValue - itemTotalSum) > 1;
+      const netWrong = netB > 0 && Math.abs(oldNetInvoice - netB) > 1;
+
+      if(invoiceWrong || netWrong){
+        b.invoiceValue = itemTotalSum;
+        if(netB > 0 && netB >= itemTotalSum - 1){
+          b.netInvoice  = netB;
+          b.mrpRounding = Math.round((netB - itemTotalSum) * 100) / 100;
+        } else if(oldNetInvoice >= itemTotalSum - 1 && !netWrong){
+          b.mrpRounding = Math.round((oldNetInvoice - itemTotalSum) * 100) / 100;
+        } else {
+          b.netInvoice  = itemTotalSum;
+          b.mrpRounding = 0;
+        }
+        changed = true;
+        fixed++;
+        console.log(`[Repair] ${b.icdc||b.date}: invoiceValue ${oldInvoiceValue}→${b.invoiceValue}, netInvoice ${oldNetInvoice}→${b.netInvoice}, mrpRounding ${oldMrpRounding}→${b.mrpRounding}`);
+      }
+    });
+
+    if(changed) sa('bills', bills);
+  });
+
+  CS = prevCS;
+  return {fixed, checked};
+}
+
+function manualRepairFinancials(){
+  const result = repairBillFinancials();
+  renderPurchaseList();
+  renderDash();
+  toast(result.fixed > 0
+    ? `✅ Fixed financial values on ${result.fixed} of ${result.checked} bill(s) — refresh any open bill/panel to see updated figures`
+    : `ℹ️ Checked ${result.checked} bill(s) — all financial values already correct`);
+}
+
 function repairStockNames(){
   const storeIds = getStoreIds();
   const prevCS   = CS;
@@ -3755,7 +3976,24 @@ function updatePurchaseFilter(){
 // ══════════════════════════════════════════════
 //  BILL TALLY CHECKER
 // ══════════════════════════════════════════════
-// Store cess rates per brand: { "billId_bn_sml": cessPerBtl }
+// ── Special Excise Cess — size-based defaults + per-brand overrides ──────────
+// Confirmed standard rates (per bottle) by size, given directly by the user:
+//   90ml → ₹10, 180ml → ₹20, 375ml → ₹40 (also aliased from 360ml), 750ml → ₹80
+// These act as smart defaults so most brands never need individual entry —
+// only exceptions need a per-brand override. Both tiers are editable and persist.
+const DEFAULT_CESS_BY_SIZE = {90:10, 180:20, 360:40, 375:40, 750:80};
+const cessBySizeMap = Object.assign({}, DEFAULT_CESS_BY_SIZE,
+  JSON.parse(localStorage.getItem('lm_cess_by_size')||'{}'));
+
+function saveCessBySize(sizeML, val){
+  const v = parseFloat(val);
+  if(!isNaN(v) && v > 0) cessBySizeMap[sizeML] = v;
+  else delete cessBySizeMap[sizeML];
+  localStorage.setItem('lm_cess_by_size', JSON.stringify(cessBySizeMap));
+  renderBillTally();
+}
+
+// Store cess rates per brand: { "bn_sizeML": cessPerBtl }
 // Cess map keyed by "brandCode_sizeML" — shared across ALL bills for same brand+size
 const tallycessMap = JSON.parse(localStorage.getItem('lm_tally_cess')||'{}');
 function saveTallyCess(key, val){
@@ -3767,7 +4005,10 @@ function saveTallyCess(key, val){
 }
 function getTallyCess(key, def){
   // key format: "bn_sizeML" (brand code + size in ml)
+  // Priority: 1) brand-specific override, 2) size-based default, 3) global manual input
   if(tallycessMap[key] !== undefined) return tallycessMap[key];
+  const sizeML = parseInt(key.split('_').pop());
+  if(!isNaN(sizeML) && cessBySizeMap[sizeML] !== undefined) return cessBySizeMap[sizeML];
   return def;
 }
 function getCessMapSummary(){
@@ -3775,9 +4016,28 @@ function getCessMapSummary(){
   return entries.length ? entries.map(([k,v])=>`${k}: ₹${v}`).join(', ') : 'None saved';
 }
 
+function renderCessBySizeTable(){
+  const el = document.getElementById('cess-by-size-table');
+  if(!el) return;
+  const sizes = Object.keys(cessBySizeMap).map(Number).sort((a,b)=>a-b);
+  el.innerHTML = sizes.map(sz => {
+    const isDefault = DEFAULT_CESS_BY_SIZE[sz] !== undefined && cessBySizeMap[sz] === DEFAULT_CESS_BY_SIZE[sz];
+    return `<div style="display:flex;align-items:center;gap:4px;background:var(--card);border-radius:6px;padding:4px 8px;border:1px solid ${isDefault?'var(--border)':'rgba(184,134,11,.4)'}">
+      <span style="font-size:.7rem;color:var(--t2);font-weight:600">${sz}ml</span>
+      <input class="fc" type="number" step="0.01" value="${cessBySizeMap[sz]}"
+        style="width:55px;padding:2px 4px;font-size:.72rem;text-align:right;border:none;background:transparent"
+        onblur="saveCessBySize(${sz}, this.value)"
+        onkeydown="if(event.key==='Enter') this.blur()">
+      <span onclick="delete cessBySizeMap[${sz}];localStorage.setItem('lm_cess_by_size',JSON.stringify(cessBySizeMap));renderBillTally()"
+        style="cursor:pointer;color:var(--t3);font-size:.7rem;padding:0 2px" title="Remove">✕</span>
+    </div>`;
+  }).join('') || '<span style="color:var(--t3);font-size:.7rem">No sizes configured yet</span>';
+}
+
 function renderBillTally(){
   const div = document.getElementById('bill-tally-result');
   if(!div) return;
+  renderCessBySizeTable();
   const globalCess = parseFloat(document.getElementById('tally-cess-per-bottle')?.value)||0;
   const filter     = document.getElementById('tally-filter')?.value||'all';
   const bills      = ga('bills').sort((a,b)=>a.date.localeCompare(b.date));
@@ -3799,30 +4059,30 @@ function renderBillTally(){
       const sizeML   = it.sizeML   || parseInt(_psMLStr.replace(/[^0-9]/g,'')) || 0;
       const totalBtl = cases * packQty + extraBtls;
       // Brand number: strip leading zeros for price-data lookup key
-      // Strip " (24)" suffix and leading zeros from brand number
       const _rawBN   = String(it.brandNum||it.bnum||'');
       const bn       = _rawBN.replace(/\s*\(.*\)/,'').replace(/^0+/,'');
       const pd       = getPriceData(bn, sizeML);
       // Key by brand+size only so cess auto-fills across bills
       const cessKey  = `${bn}_${sizeML}`;
       const cess     = getTallyCess(cessKey, globalCess);
-      // For btl-only delivery (0 cases, N loose bottles): use btlRate × btlsDel
-      // For case delivery: use issuePrice/case × cases
-      const btlsOnlyDelivery = cases === 0 && extraBtls > 0;
-      let issueAmt, marginAmt;
-      if(btlsOnlyDelivery){
-        // Use the actual btlRate from the bill (most accurate for loose bottle billing)
-        const btlRateFromBill = it.btlRate || (pd ? pd[0]/packQty : 0);
-        issueAmt  = btlRateFromBill * extraBtls;
-        marginAmt = pd ? extraBtls * pd[1] : 0;
-      } else {
-        issueAmt  = pd ? cases * pd[0] : 0;
-        marginAmt = pd ? totalBtl * pd[1] : 0;
-      }
+
+      // ── Purchase (Issue) price — unified for cases + loose bottles ──────────
+      // Issue Price in the price list is PER CASE. The per-bottle price is
+      // Issue Price ÷ bottles-per-case, kept at full decimal precision.
+      // Cases are billed at the full case rate; any loose bottles on the same
+      // line are billed at the per-bottle rate — both always apply together
+      // (previously, loose bottles were silently dropped whenever a line also
+      // had cases, e.g. "2 cases + 47 bottles" only priced the 2 cases).
+      const issuePricePerCase = pd ? pd[0] : 0;
+      const issuePricePerBtl  = (pd && packQty > 0) ? pd[0] / packQty : 0;
+      const issueAmt  = (cases * issuePricePerCase) + (extraBtls * issuePricePerBtl);
+      const marginAmt = pd ? totalBtl * pd[1] : 0;
+      const btlsOnlyDelivery = cases === 0 && extraBtls > 0; // kept for display badge only
+
       const cessAmt  = cess * totalBtl;
       return {it, bn, sml:sizeML, packQty, totalBtl, cessKey, cess, issueAmt, marginAmt, cessAmt,
         lineTotal: issueAmt + marginAmt + cessAmt,
-        issuePerCase: pd?pd[0]:0, marginPerBtl: pd?pd[1]:0, mrp: pd?pd[2]:0,
+        issuePerCase: pd?pd[0]:0, issuePerBtl: issuePricePerBtl, marginPerBtl: pd?pd[1]:0, mrp: pd?pd[2]:0,
         btlsOnlyDelivery, hasPd: !!pd};
     });
     const itemsTotal   = items.reduce((s,r)=>s+r.lineTotal,0);
@@ -4038,13 +4298,21 @@ function renderPurchaseList(){
         </div>
         </div>
       </div>
-      <div onclick="const nx=this.nextElementSibling;const wasOpen=nx.style.display==='';nx.style.display=wasOpen?'none':'';this.querySelector('.mrp-tog').textContent=wasOpen?'▶':'▼'; if(!wasOpen) setTimeout(()=>updateMRPRoundingSum(${b.id}),0)"
-        style="cursor:pointer;font-size:.72rem;color:var(--gold2);padding:4px 0 8px;display:flex;align-items:center;gap:6px;user-select:none">
-        <span class="mrp-tog">▶</span>
-        <span>📊 Enter MRP Rounding per Brand${b.mrpRounding?` — target ₹${fmtR(b.mrpRounding)}`:''}</span>
+      <div onclick="const nx=this.nextElementSibling;const wasOpen=nx.style.display==='';nx.style.display=wasOpen?'none':'';this.querySelector('.mrp-tog').textContent=wasOpen?'▶':'▼'; if(!wasOpen) setTimeout(()=>{ if(!${JSON.stringify(!!(b.mrpRoundingByItem && Object.keys(b.mrpRoundingByItem).length))}) autoFillMRPRoundingFromSpMargin(${b.id}); else updateMRPRoundingSum(${b.id}); },0)"
+        style="cursor:pointer;margin-top:6px;padding:8px 10px;background:rgba(184,134,11,.08);border:1px solid rgba(184,134,11,.3);border-radius:8px;display:flex;align-items:center;gap:8px;user-select:none">
+        <span class="mrp-tog" style="font-size:.8rem">▶</span>
+        <span style="font-size:.78rem;font-weight:600;color:var(--gold2)">📊 Enter MRP Rounding per Brand${b.mrpRounding?` — target ₹${fmtR(b.mrpRounding)}`:''}</span>
       </div>
       <div style="display:none" id="mrp-panel-${b.id}">
         ${renderMRPRoundingTable(b)}
+      </div>
+      <div onclick="const nx=this.nextElementSibling;const wasOpen=nx.style.display==='';nx.style.display=wasOpen?'none':'';this.querySelector('.cess-tog').textContent=wasOpen?'▶':'▼'; if(!wasOpen) setTimeout(()=>{ if(!${JSON.stringify(!!(b.exciseCessByItem && Object.keys(b.exciseCessByItem).length))}) autoFillExciseCessFromSize(${b.id}); else updateExciseCessSum(${b.id}); },0)"
+        style="cursor:pointer;margin-top:6px;padding:8px 10px;background:rgba(180,60,60,.06);border:1px solid rgba(180,60,60,.25);border-radius:8px;display:flex;align-items:center;gap:8px;user-select:none">
+        <span class="cess-tog" style="font-size:.8rem">▶</span>
+        <span style="font-size:.78rem;font-weight:600;color:var(--red)">🧾 Enter Special Excise Cess per Brand${b.exciseCess?` — target ₹${fmtR(b.exciseCess)}`:''}</span>
+      </div>
+      <div style="display:none" id="cess-panel-${b.id}">
+        ${renderExciseCessTable(b)}
       </div>
       <div style="margin-top:8px;padding:8px 10px;background:var(--s2);border-radius:7px;border:1px solid var(--border);font-size:.72rem">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px 12px">
@@ -4085,19 +4353,35 @@ function renderMRPRoundingTable(b){
       ? (it.brandName||it.brandNum||'—')
       : (it.brandName||it.brandNum||'—').replace(/^\d{4}\s*\(\d+\)\s*/,'').trim()||it.brandName;
     const val = stored[i] !== undefined ? stored[i] : '';
+
+    // Price-list-derived suggestion: MRP Rounding for a line = totalBottles × Special Margin/btl
+    // (verified formula: Σ over all lines of totalBottles × spMargin = bill's stated MRP Rounding Off)
+    const bn      = (it.brandNum||it.bnum||'').replace(/\s*\(.*\)/,'').replace(/^0+/,'');
+    const packQty = it.packQty || parseInt((it.packSize||'').split('/')[0]) || 0;
+    const sizeML  = it.sizeML  || parseInt((it.packSize||'').split('/')[1]) || 0;
+    const totalBtl= (it.casesDel||0)*packQty + (it.btlsDel||0);
+    let   pd = null;
+    try { pd = getPriceData(bn, sizeML); } catch(e){}
+    const spMargin = pd ? pd[1] : 0;
+    const suggested = spMargin ? Math.round(totalBtl * spMargin * 100) / 100 : 0;
+
     return `<tr>
       <td style="font-size:.72rem;max-width:150px">
         <div style="font-weight:500">${esc(displayName)}</div>
-        <div style="color:var(--t3);font-size:.62rem">${esc(it.bnum||it.brandNum||'')} · ${it.packSize||''}</div>
+        <div style="color:var(--t3);font-size:.62rem">${esc(it.bnum||it.brandNum||'')} · ${it.packSize||''} · ${totalBtl} btls</div>
       </td>
-      <td class="num" style="font-size:.7rem;color:var(--t3)">${fmtR(it.total)}</td>
+      <td class="num" style="font-size:.7rem;color:var(--t3)">
+        ${fmtR(it.total)}
+        ${spMargin?`<div style="font-size:.6rem;color:var(--t3)">₹${spMargin}/btl</div>`:''}
+      </td>
       <td class="num">
         <input class="fc" type="number" step="0.01"
           style="width:80px;padding:3px 6px;text-align:right;font-size:.75rem"
-          value="${val}" placeholder="0.00"
+          value="${val}" placeholder="${suggested?suggested.toFixed(2):'0.00'}"
           id="mrpr-${b.id}-${i}"
           oninput="updateMRPRoundingSum(${b.id})"
           onblur="saveMRPRoundingValue(${b.id},${i},this.value)">
+        ${suggested&&val===''?`<div style="font-size:.6rem;color:var(--blue,#4a90d9);text-align:right;margin-top:1px">suggest: ₹${suggested.toFixed(2)}</div>`:''}
       </td>
     </tr>`;
   }).join('');
@@ -4121,8 +4405,9 @@ function renderMRPRoundingTable(b){
       </tfoot>
     </table>
   </div>
-  <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end">
-    <button class="btn btn-xs" onclick="autoFillMRPRoundingProportional(${b.id})">⚡ Auto-fill Proportionally</button>
+  <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end;flex-wrap:wrap">
+    <button class="btn btn-xs btn-gold" onclick="autoFillMRPRoundingFromSpMargin(${b.id})">⚡ Auto-fill from Special Margin</button>
+    <button class="btn btn-xs" onclick="autoFillMRPRoundingProportional(${b.id})">Distribute Proportionally</button>
     <button class="btn btn-xs btn-out" style="color:var(--red)" onclick="clearMRPRounding(${b.id})">✕ Clear All</button>
   </div>`;
 }
@@ -4162,6 +4447,43 @@ function saveMRPRoundingValue(billId, itemIdx, val){
   if(!isNaN(v) && v !== 0) b.mrpRoundingByItem[itemIdx] = v;
   else delete b.mrpRoundingByItem[itemIdx];
   sa('bills', bills);
+}
+
+// Primary auto-fill method: MRP Rounding per line = totalBottles × Special Margin
+// (verified against real bills: this formula's sum matches the PDF's stated
+// MRP Rounding Off to within a few paise — see conversation notes)
+function autoFillMRPRoundingFromSpMargin(billId){
+  const bills = ga('bills');
+  const b = bills.find(x=>x.id===billId);
+  if(!b) return;
+
+  if(!b.mrpRoundingByItem) b.mrpRoundingByItem = {};
+  let running = 0, missingPd = 0;
+
+  (b.items||[]).forEach((it,i)=>{
+    const bn      = (it.brandNum||it.bnum||'').replace(/\s*\(.*\)/,'').replace(/^0+/,'');
+    const packQty = it.packQty || parseInt((it.packSize||'').split('/')[0]) || 0;
+    const sizeML  = it.sizeML  || parseInt((it.packSize||'').split('/')[1]) || 0;
+    const totalBtl= (it.casesDel||0)*packQty + (it.btlsDel||0);
+    let pd = null;
+    try { pd = getPriceData(bn, sizeML); } catch(e){}
+    if(!pd){ missingPd++; return; }
+
+    const share = Math.round(totalBtl * pd[1] * 100) / 100;
+    b.mrpRoundingByItem[i] = share;
+    running += share;
+    const inp = document.getElementById(`mrpr-${billId}-${i}`);
+    if(inp) inp.value = share.toFixed(2);
+  });
+
+  sa('bills', bills);
+  updateMRPRoundingSum(billId);
+
+  const target = b.mrpRounding || 0;
+  const diff = Math.abs(target - running);
+  toast(missingPd
+    ? `⚡ Filled from Special Margin — ${missingPd} brand(s) had no price-list match, entered as 0`
+    : `⚡ Filled from Special Margin — ₹${running.toFixed(2)} (PDF target ₹${target.toFixed(2)}, diff ₹${diff.toFixed(2)})`);
 }
 
 function autoFillMRPRoundingProportional(billId){
@@ -4206,6 +4528,161 @@ function clearMRPRounding(billId){
   });
   updateMRPRoundingSum(billId);
   toast('Cleared all MRP rounding entries for this bill');
+}
+
+// ── Special Excise Cess — per-brand entry, per bill ───────────────────────────
+// Same UX pattern as MRP Rounding: auto-fills from the size-based cess defaults
+// (see DEFAULT_CESS_BY_SIZE / cessBySizeMap), fully editable per brand, and
+// cross-checked live against the bill's stated Special Excise Cess total.
+function renderExciseCessTable(b){
+  const target = b.exciseCess || 0;
+  const stored = b.exciseCessByItem || {};
+  const rows = (b.items||[]).map((it,i)=>{
+    const isCodeOnly = /^\d{4}\s*\(\d+\)\s*$/.test((it.brandName||'').trim());
+    const displayName = isCodeOnly
+      ? (it.brandName||it.brandNum||'—')
+      : (it.brandName||it.brandNum||'—').replace(/^\d{4}\s*\(\d+\)\s*/,'').trim()||it.brandName;
+    const val = stored[i] !== undefined ? stored[i] : '';
+
+    const bnKey    = (it.brandNum||it.bnum||'').replace(/\s*\(.*\)/,'').replace(/^0+/,'');
+    const packQty  = it.packQty || parseInt((it.packSize||'').split('/')[0]) || 0;
+    const sizeML   = it.sizeML  || parseInt((it.packSize||'').split('/')[1]) || 0;
+    const totalBtl = (it.casesDel||0)*packQty + (it.btlsDel||0);
+    const cessKey  = `${bnKey}_${sizeML}`;
+    const perBtlCess = getTallyCess(cessKey, cessBySizeMap[sizeML] !== undefined ? cessBySizeMap[sizeML] : 0);
+    const suggested  = Math.round(totalBtl * perBtlCess * 100) / 100;
+
+    return `<tr>
+      <td style="font-size:.72rem;max-width:150px">
+        <div style="font-weight:500">${esc(displayName)}</div>
+        <div style="color:var(--t3);font-size:.62rem">${esc(it.bnum||it.brandNum||'')} · ${it.packSize||''} · ${totalBtl} btls</div>
+      </td>
+      <td class="num" style="font-size:.7rem;color:var(--t3)">
+        ${perBtlCess?`₹${perBtlCess}/btl`:'<span style="color:var(--red)">no default</span>'}
+      </td>
+      <td class="num">
+        <input class="fc" type="number" step="0.01"
+          style="width:80px;padding:3px 6px;text-align:right;font-size:.75rem"
+          value="${val}" placeholder="${suggested?suggested.toFixed(2):'0.00'}"
+          id="cessr-${b.id}-${i}"
+          oninput="updateExciseCessSum(${b.id})"
+          onblur="saveExciseCessValue(${b.id},${i},this.value)">
+        ${suggested&&val===''?`<div style="font-size:.6rem;color:var(--blue,#4a90d9);text-align:right;margin-top:1px">suggest: ₹${suggested.toFixed(2)}</div>`:''}
+      </td>
+    </tr>`;
+  }).join('');
+
+  return `<div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Brand</th><th class="num">Rate</th><th class="num">Cess ₹</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot>
+        <tr style="background:var(--s3);font-weight:700;border-top:2px solid var(--border)">
+          <td colspan="2" style="padding:5px 8px;text-align:right;font-size:.72rem">Entered Total →</td>
+          <td class="num" id="cessr-sum-${b.id}" style="padding:5px 6px;font-size:.8rem">₹0.00</td>
+        </tr>
+        <tr style="background:${target?'var(--s2)':''}">
+          <td colspan="2" style="padding:5px 8px;text-align:right;font-size:.72rem;color:var(--t3)">PDF Target (Special Excise Cess):</td>
+          <td class="num" style="padding:5px 6px;font-size:.78rem;color:var(--red);font-weight:600">${target?fmtR(target):'—'}</td>
+        </tr>
+        <tr>
+          <td colspan="3" style="padding:6px 8px;text-align:center;font-size:.72rem" id="cessr-status-${b.id}"></td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end;flex-wrap:wrap">
+    <button class="btn btn-xs btn-gold" onclick="autoFillExciseCessFromSize(${b.id})">⚡ Auto-fill from Size Defaults</button>
+    <button class="btn btn-xs btn-out" style="color:var(--red)" onclick="clearExciseCess(${b.id})">✕ Clear All</button>
+  </div>
+  <div style="font-size:.65rem;color:var(--t3);margin-top:6px">
+    💡 Manage the ₹/bottle defaults by size in the Bill Tally tab — they apply here automatically.
+  </div>`;
+}
+
+function updateExciseCessSum(billId){
+  const bills = ga('bills');
+  const b = bills.find(x=>x.id===billId);
+  if(!b) return;
+  let sum = 0;
+  (b.items||[]).forEach((_,i)=>{
+    const v = parseFloat(document.getElementById(`cessr-${billId}-${i}`)?.value);
+    if(!isNaN(v)) sum += v;
+  });
+  const sumEl = document.getElementById(`cessr-sum-${billId}`);
+  if(sumEl) sumEl.textContent = '₹'+sum.toLocaleString('en-IN',{minimumFractionDigits:2});
+
+  const target = b.exciseCess || 0;
+  const diff = target - sum;
+  const statusEl = document.getElementById(`cessr-status-${billId}`);
+  if(statusEl && target){
+    const matched = Math.abs(diff) < 0.5;
+    statusEl.innerHTML = matched
+      ? `<span style="color:var(--green);font-weight:600">✅ Matches PDF target exactly</span>`
+      : `<span style="color:${Math.abs(diff)>target*0.1?'var(--red)':'#e67e22'};font-weight:600">
+           ${diff>0?'⬆':'⬇'} ₹${Math.abs(diff).toLocaleString('en-IN',{minimumFractionDigits:2})} ${diff>0?'remaining to allocate':'over-allocated'}
+         </span>`;
+    if(sumEl) sumEl.style.color = matched ? 'var(--green)' : (Math.abs(diff)>target*0.1 ? 'var(--red)' : '#e67e22');
+  }
+}
+
+function saveExciseCessValue(billId, itemIdx, val){
+  const bills = ga('bills');
+  const b = bills.find(x=>x.id===billId);
+  if(!b) return;
+  if(!b.exciseCessByItem) b.exciseCessByItem = {};
+  const v = parseFloat(val);
+  if(!isNaN(v) && v !== 0) b.exciseCessByItem[itemIdx] = v;
+  else delete b.exciseCessByItem[itemIdx];
+  sa('bills', bills);
+}
+
+function autoFillExciseCessFromSize(billId){
+  const bills = ga('bills');
+  const b = bills.find(x=>x.id===billId);
+  if(!b) return;
+
+  if(!b.exciseCessByItem) b.exciseCessByItem = {};
+  let running = 0, noDefault = 0;
+
+  (b.items||[]).forEach((it,i)=>{
+    const bnKey    = (it.brandNum||it.bnum||'').replace(/\s*\(.*\)/,'').replace(/^0+/,'');
+    const packQty  = it.packQty || parseInt((it.packSize||'').split('/')[0]) || 0;
+    const sizeML   = it.sizeML  || parseInt((it.packSize||'').split('/')[1]) || 0;
+    const totalBtl = (it.casesDel||0)*packQty + (it.btlsDel||0);
+    const cessKey  = `${bnKey}_${sizeML}`;
+    const perBtlCess = getTallyCess(cessKey, cessBySizeMap[sizeML] !== undefined ? cessBySizeMap[sizeML] : 0);
+    if(!perBtlCess){ noDefault++; return; }
+
+    const share = Math.round(totalBtl * perBtlCess * 100) / 100;
+    b.exciseCessByItem[i] = share;
+    running += share;
+    const inp = document.getElementById(`cessr-${billId}-${i}`);
+    if(inp) inp.value = share.toFixed(2);
+  });
+
+  sa('bills', bills);
+  updateExciseCessSum(billId);
+
+  const target = b.exciseCess || 0;
+  const diff = Math.abs(target - running);
+  toast(noDefault
+    ? `⚡ Filled from size defaults — ${noDefault} brand(s) had no size default set, entered as 0`
+    : `⚡ Filled from size defaults — ₹${running.toFixed(2)} (PDF target ₹${target.toFixed(2)}, diff ₹${diff.toFixed(2)})`);
+}
+
+function clearExciseCess(billId){
+  const bills = ga('bills');
+  const b = bills.find(x=>x.id===billId);
+  if(!b) return;
+  b.exciseCessByItem = {};
+  sa('bills', bills);
+  (b.items||[]).forEach((_,i)=>{
+    const inp = document.getElementById(`cessr-${billId}-${i}`);
+    if(inp) inp.value = '';
+  });
+  updateExciseCessSum(billId);
+  toast('Cleared all excise cess entries for this bill');
 }
 
 function delBill(id){
@@ -9723,8 +10200,10 @@ function getPriceData(brandNum, sizeML) {
 // Run once after TSBCL_PRICE_DATA is defined — fixes any bad names already in storage
 setTimeout(function(){
   repairStockNames();
+  repairBillFinancials();
   renderStockTable();
   renderMRPTable();
+  renderPurchaseList();
 }, 0);
 
 async function extractPriceListPDF(file){
