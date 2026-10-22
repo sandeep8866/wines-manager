@@ -244,7 +244,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div class="sp-logo">🥃</div>
   <div class="sp-title">Wines Manager</div>
   <div class="sp-sub">Telangana Excise · ICDC Bills</div>
-  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v14.5 · 22 Oct 2026</div>
+  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v14.6 · 23 Oct 2026</div>
   <div class="sp-bar"><div class="sp-fill"></div></div>
 </div>
 
@@ -253,7 +253,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div id="store-btns" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
   <div id="store-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
   <div id="topbar-date" style="white-space:nowrap"></div>
-  <div id="app-ver-badge" title="Built: 22 Oct 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v14.5 · 221026</div>
+  <div id="app-ver-badge" title="Built: 23 Oct 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v14.6 · 231026</div>
 </div>
 
 <!-- MAIN -->
@@ -373,6 +373,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
     <div style="display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap">
       <input class="fc" type="text" id="diag-filter" placeholder="file name contains… e.g. Jan-2026" style="font-size:.72rem;max-width:230px">
       <button class="btn btn-xs btn-out" onclick="diagnoseDrive()">🩺 Why wasn't it imported?</button>
+      <button class="btn btn-xs btn-gold" onclick="importMatchingDrive()">⬇ Check & import these files</button>
     </div>
     <div id="gdrive-pdf-status" style="margin-top:8px;font-size:.75rem"></div>
     <div class="alert alert-info" style="margin-top:10px;font-size:.72rem">
@@ -1062,8 +1063,8 @@ const STORE_INFO = loadStoreInfo();
 // Safe STORE_INFO accessor — handles both numeric and string keys
 function SI(id){ return STORE_INFO[id] || STORE_INFO[String(id)] || STORE_INFO[Number(id)] || {name:'Store '+id,short:'Store '+id,code:'',lic:''}; }
 
-const APP_VERSION = 'v14.5';
-const APP_BUILD   = '22 Oct 2026';
+const APP_VERSION = 'v14.6';
+const APP_BUILD   = '23 Oct 2026';
 let CS = getStoreIds()[0]; // current store — first store by default
 let mnRowCount = 1;
 let currentRpt = 'brandwise';
@@ -5534,93 +5535,104 @@ function _dateHintFromName(name){
   return '';                                                         // no usable date in the name
 }
 
+// Core: find & save unsaved PDFs dated inside one credit-chain gap. Ignores the skip-cache.
+async function recheckGapCore(w, progress){
+  const fm = (localStorage.getItem('lm_gdrive_pdf_folder')||'').match(/folders\/([a-zA-Z0-9_-]+)/);
+  if(!fm) throw new Error('Save the Drive folder link in Purchases first');
+  if(!getAppsScriptUrl()) throw new Error('Set the Apps Script URL first');
+  const storeId = w.storeId, lo = w.rawA, hi = w.rawB;
+  const saved = [], failed = []; let seen = 0;
+  const r = await cloudCall({action:'listFolder', folderId: fm[1]});
+  if(!r.ok) throw new Error(r.error || 'Could not list the folder');
+  const files = (r.files||[]).filter(f=>!f.tooBig);
+  const have = new Set();
+  getStoreIds().forEach(sid=>{ (JSON.parse(localStorage.getItem(`lm_s${sid}_bills`))||[]).forEach(b=>{ if(b.icdc) have.add(b.icdc.toUpperCase()); }); });
+  const idMap = getFetchedIcdcMap();
+  // Skip a file only when we KNOW its ICDC and that bill is saved. File names carry the
+  // download date, not always the bill date, so allow one day either side.
+  const dayShift = (d,n)=>{ const t=new Date(d+'T00:00:00Z'); t.setUTCDate(t.getUTCDate()+n); return t.toISOString().slice(0,10); };
+  const cands = files.filter(f=>{
+    const ic = (f.name||'').match(/ICDC\d{10,}/i)?.[0]?.toUpperCase() || idMap[f.id];
+    if(ic && have.has(ic)) return false;
+    const d = _dateHintFromName(f.name||'');
+    return d ? (d>=dayShift(lo,-1) && d<=dayShift(hi,1)) : true;
+  }).sort((a,b)=>a.name.localeCompare(b.name)).slice(0, 40);
+
+  for(let i=0;i<cands.length;i++){
+    const f = cands[i];
+    if(progress) progress(`Checking ${i+1}/${cands.length}: ${f.name.slice(0,30)}…`);
+    try{
+      const fr = await cloudCall({action:'getFile', fileId:f.id});
+      if(!fr.ok || !fr.base64) throw new Error(fr.error || 'Download failed');
+      const bin = atob(fr.base64), buf = new Uint8Array(bin.length);
+      for(let j=0;j<bin.length;j++) buf[j] = bin.charCodeAt(j);
+      const parsed = await extractPDF(new File([new Blob([buf],{type:'application/pdf'})], f.name, {type:'application/pdf'}));
+      seen++;
+      if(!parsed || !parsed.items?.length || !parsed.icdc){ failed.push(f.name); continue; }
+      const ic = parsed.icdc.toUpperCase();
+      if(have.has(ic)){ rememberFetched(f.id, ic); continue; }
+      if(parsed.date < lo || parsed.date > hi) continue;
+      const target = detectStore(parsed) || storeId;
+      if(String(target) !== String(storeId)) continue;
+      const prevCS = CS; CS = target;
+      try{
+        const bills = ga('bills');
+        bills.push({
+          id: Date.now()+i, date: parsed.date||today(), icdc: parsed.icdc,
+          retailer: parsed.retailer || SI(target).name, items: parsed.items||[],
+          netInvoice: parsed.netInvoice||0, eChallan: parsed.eChallan||0,
+          prevCredit: parsed.prevCredit||0, subTotal: parsed.subTotal||0,
+          invoiceValue: parsed.invoiceValue||0, mrpRounding: parsed.mrpRounding||0,
+          exciseCess: parsed.exciseCess||0, tcs: parsed.tcs||0, turnoverTax: parsed.turnoverTax||0,
+          profTax: parsed.profTax||0, amtCredited: parsed.amtCredited||0,
+          eChallanRef: parsed.eChallanRef||'', creditBalance: parsed.creditBalance||parsed.amtCredited||0,
+          storeNum: target
+        });
+        sa('bills', bills);
+        (parsed.items||[]).forEach(it => addToStock(it.brandName,it.brandNum,it.ptype,it.packSize,it.casesDel,it.btlRate||it.unitRate||0,it.btlsDel));
+      } finally { CS = prevCS; }
+      have.add(ic); rememberFetched(f.id, ic);
+      saved.push(`${parsed.icdc.slice(-6)} (${fmtDate(parsed.date)})`);
+    }catch(e){ failed.push(f.name+' — '+(e.message||'error').slice(0,40)); }
+  }
+  return {saved, seen, failed};
+}
+
 async function recheckDriveForGap(wi, btn){
   const out = document.getElementById('recheck-out-'+wi);
   const w = (window._creditWarnings||[])[wi];
   const say = (html)=>{ if(out) out.innerHTML = html; };
   if(!w) return say('<span style="color:var(--red)">Warning not found — regenerate the report</span>');
-  const folderUrl = localStorage.getItem('lm_gdrive_pdf_folder') || '';
-  const fm = folderUrl.match(/folders\/([a-zA-Z0-9_-]+)/);
-  if(!fm)  return say('<span style="color:var(--red)">❌ Save the Drive folder link in Purchases first</span>');
-  if(!getAppsScriptUrl()) return say('<span style="color:var(--red)">❌ Set the Apps Script URL first</span>');
   if(btn) btn.disabled = true;
   say('<div class="loading" style="margin:0"><div class="spin"></div>Listing Drive folder…</div>');
-  const storeId = w.storeId;
-  let saved = [], seen = 0, failed = [];
+  let res;
   try{
-    const r = await cloudCall({action:'listFolder', folderId: fm[1]});
-    if(!r.ok) throw new Error(r.error || 'Could not list the folder');
-    const files = (r.files||[]).filter(f=>!f.tooBig);
-
-    // ICDCs already saved in any store
-    const have = new Set();
-    getStoreIds().forEach(sid=>{ (JSON.parse(localStorage.getItem(`lm_s${sid}_bills`))||[]).forEach(b=>{ if(b.icdc) have.add(b.icdc.toUpperCase()); }); });
-
-    // Candidates: date in the name inside the gap (±0), or no date in the name at all
-    const lo = w.rawA, hi = w.rawB;
-    const cands = files.filter(f=>{
-      const ic = (f.name||'').match(/ICDC\d{10,}/i)?.[0]?.toUpperCase();
-      if(ic && have.has(ic)) return false;
-      const d = _dateHintFromName(f.name||'');
-      return d ? (d>=lo && d<=hi) : true;
-    }).sort((a,b)=>a.name.localeCompare(b.name)).slice(0, 40);
-
-    for(let i=0;i<cands.length;i++){
-      const f = cands[i];
-      say(`<div class="loading" style="margin:0"><div class="spin"></div>Checking ${i+1}/${cands.length}: ${esc(f.name.slice(0,30))}…</div>`);
-      try{
-        const fr = await cloudCall({action:'getFile', fileId:f.id});
-        if(!fr.ok || !fr.base64) throw new Error(fr.error || 'Download failed');
-        const bin = atob(fr.base64), buf = new Uint8Array(bin.length);
-        for(let j=0;j<bin.length;j++) buf[j] = bin.charCodeAt(j);
-        const parsed = await extractPDF(new File([new Blob([buf],{type:'application/pdf'})], f.name, {type:'application/pdf'}));
-        seen++;
-        if(!parsed || !parsed.items?.length || !parsed.icdc){ failed.push(f.name); continue; }
-        if(have.has(parsed.icdc.toUpperCase())) continue;                       // already saved
-        if(parsed.date < lo || parsed.date > hi) continue;                      // outside the gap
-        const target = detectStore(parsed) || storeId;
-        if(String(target) !== String(storeId)) continue;                        // other store's bill
-        const prevCS = CS; CS = target;
-        try{
-          const bills = ga('bills');
-          bills.push({
-            id: Date.now()+i, date: parsed.date||today(), icdc: parsed.icdc,
-            retailer: parsed.retailer || SI(target).name, items: parsed.items||[],
-            netInvoice: parsed.netInvoice||0, eChallan: parsed.eChallan||0,
-            prevCredit: parsed.prevCredit||0, subTotal: parsed.subTotal||0,
-            invoiceValue: parsed.invoiceValue||0, mrpRounding: parsed.mrpRounding||0,
-            exciseCess: parsed.exciseCess||0, tcs: parsed.tcs||0, turnoverTax: parsed.turnoverTax||0,
-            profTax: parsed.profTax||0, amtCredited: parsed.amtCredited||0,
-            eChallanRef: parsed.eChallanRef||'', creditBalance: parsed.creditBalance||parsed.amtCredited||0,
-            storeNum: target
-          });
-          sa('bills', bills);
-          (parsed.items||[]).forEach(it => addToStock(it.brandName,it.brandNum,it.ptype,it.packSize,it.casesDel,it.btlRate||it.unitRate||0,it.btlsDel));
-        } finally { CS = prevCS; }
-        have.add(parsed.icdc.toUpperCase());
-        addFetchedFileId(f.id);
-        saved.push(`${parsed.icdc.slice(-6)} (${fmtDate(parsed.date)})`);
-      }catch(e){ failed.push(f.name+' — '+(e.message||'error').slice(0,40)); }
-    }
+    res = await recheckGapCore(w, t=>say(`<div class="loading" style="margin:0"><div class="spin"></div>${esc(t)}</div>`));
   }catch(e){
     if(btn) btn.disabled = false;
     return say(`<span style="color:var(--red)">❌ ${esc(e.message||'Drive check failed')}</span>`);
   }
   if(btn) btn.disabled = false;
-
   let msg;
-  if(saved.length){
-    msg = `<span style="color:var(--green)">✅ Found and saved ${saved.length} missing bill${saved.length>1?'s':''}: ${esc(saved.join(', '))}</span>`;
-  } else {
-    msg = `<span style="color:var(--t2)">No unsaved PDF dated ${fmtDate(w.rawA)} – ${fmtDate(w.rawB)} found in the Drive folder (checked ${seen}). If the gap remains, it is most likely a challan paid before the next bill — use ✏️ Fix e-Challan.</span>`;
-  }
-  if(failed.length) msg += `<div style="color:var(--red);margin-top:3px">⚠️ Could not read: ${esc(failed.slice(0,3).join('; '))}</div>`;
+  if(res.saved.length) msg = `<span style="color:var(--green)">✅ Found and saved ${res.saved.length} missing bill${res.saved.length>1?'s':''}: ${esc(res.saved.join(', '))}</span>`;
+  else msg = `<span style="color:var(--t2)">No unsaved PDF for ${fmtDate(w.rawA)} – ${fmtDate(w.rawB)} found in the Drive folder (checked ${res.seen}). If the gap remains, it is most likely a challan paid before the next bill — use ✏️ Fix e-Challan.</span>`;
+  if(res.failed.length) msg += `<div style="color:var(--red);margin-top:3px">⚠️ Could not read: ${esc(res.failed.slice(0,3).join('; '))}</div>`;
   say(msg);
-  if(saved.length){
-    toast(`✅ ${saved.length} bill${saved.length>1?'s':''} added`);
+  if(res.saved.length){
+    toast(`✅ ${res.saved.length} bill${res.saved.length>1?'s':''} added`);
     try{ renderPurchaseList(); renderStockTable(); renderDash(); }catch(e){}
-    setTimeout(()=>{ try{ genReport(); const o=document.getElementById('rpt-out'); }catch(e){} }, 400);
+    setTimeout(()=>{ try{ genReport(); }catch(e){} }, 400);
   }
+}
+
+// After a Drive fetch: if the credit chain still has gaps, look for the missing PDFs automatically.
+async function autoRecheckGaps(){
+  let all = [];
+  getStoreIds().forEach(id=>{ (JSON.parse(localStorage.getItem(`lm_s${id}_bills`))||[]).forEach(b=>all.push(Object.assign({},b,{_store:id}))); });
+  const gaps = chainWarnings(all).slice(0,4);
+  const found = [];
+  for(const w of gaps){ try{ const r = await recheckGapCore(w); found.push(...r.saved); }catch(e){ break; } }
+  return {gaps:gaps.length, found};
 }
 
 function showChallanForm(wi){
@@ -7260,6 +7272,13 @@ function addFetchedFileId(id){
   const trimmed = arr.length > 2000 ? arr.slice(arr.length - 1000) : arr;
   localStorage.setItem('lm_fetched_file_ids', JSON.stringify(trimmed));
 }
+function getFetchedIcdcMap(){ try{ return JSON.parse(localStorage.getItem('lm_fetched_icdc')||'{}'); }catch{ return {}; } }
+function rememberFetched(id, icdc){
+  addFetchedFileId(id);
+  const m = getFetchedIcdcMap(); m[id] = String(icdc||'').toUpperCase();
+  const keys = Object.keys(m); if(keys.length>2500) keys.slice(0,keys.length-2000).forEach(k=>delete m[k]);
+  localStorage.setItem('lm_fetched_icdc', JSON.stringify(m));
+}
 function clearFetchedFileIds(){
   localStorage.removeItem('lm_fetched_file_ids');
 }
@@ -7330,6 +7349,71 @@ async function diagnoseDrive(){
   }catch(e){ if(st) st.innerHTML=`<span style="color:var(--red)">❌ ${esc(e.message||'Diagnose failed')}</span>`; }
 }
 
+// ── Exact check: download each matching Drive PDF, compare its ICDC with saved bills, import if missing ──
+async function importMatchingDrive(){
+  const st = document.getElementById('gdrive-pdf-status');
+  const filt = (document.getElementById('diag-filter')?.value||'').trim().toLowerCase();
+  const fm = (localStorage.getItem('lm_gdrive_pdf_folder')||'').match(/folders\/([a-zA-Z0-9_-]+)/);
+  const say = h => { if(st) st.innerHTML = h; };
+  if(!filt) return say('<span style="color:var(--red)">Type part of the file name first (e.g. 28-Jan-2026)</span>');
+  if(!fm) return say('<span style="color:var(--red)">❌ Save a valid Drive folder link first</span>');
+  if(!getAppsScriptUrl()) return say('<span style="color:var(--red)">❌ Set the Apps Script URL first</span>');
+  say('<div class="loading"><div class="spin"></div>Reading folder list…</div>');
+  const lines = [];
+  try{
+    const r = await cloudCall({action:'listFolder', folderId: fm[1]});
+    if(!r.ok) throw new Error(r.error||'listFolder failed');
+    const files = (r.files||[]).filter(f=>!f.tooBig && (f.name||'').toLowerCase().includes(filt)).sort((a,b)=>a.name.localeCompare(b.name)).slice(0,40);
+    if(!files.length) return say(`<span style="color:var(--red)">No file name contains “${esc(filt)}”</span>`);
+    const have = new Set();
+    getStoreIds().forEach(sid=>{ (JSON.parse(localStorage.getItem(`lm_s${sid}_bills`))||[]).forEach(b=>{ if(b.icdc) have.add(b.icdc.toUpperCase()); }); });
+    for(let i=0;i<files.length;i++){
+      const f = files[i];
+      say(`<div class="loading"><div class="spin"></div>${i+1}/${files.length}: ${esc(f.name)}…</div>` + lines.join(''));
+      let line;
+      try{
+        const fr = await cloudCall({action:'getFile', fileId:f.id});
+        if(!fr.ok || !fr.base64) throw new Error(fr.error||'download failed');
+        const bin = atob(fr.base64), buf = new Uint8Array(bin.length);
+        for(let j=0;j<bin.length;j++) buf[j] = bin.charCodeAt(j);
+        const parsed = await extractPDF(new File([new Blob([buf],{type:'application/pdf'})], f.name, {type:'application/pdf'}));
+        if(!parsed || !parsed.items?.length || !parsed.icdc) throw new Error('could not read bill');
+        const target = detectStore(parsed) || CS;
+        const tag = `${esc(f.name)} → ICDC …${esc(parsed.icdc.slice(-6))} · ${fmtDate(parsed.date)} · ${esc(SI(target).short||('Store '+target))}`;
+        if(have.has(parsed.icdc.toUpperCase())){
+          line = `<div>✔ ${tag} — already saved</div>`;
+        } else {
+          const prevCS = CS; CS = target;
+          try{
+            const bills = ga('bills');
+            bills.push({
+              id: Date.now()+i, date: parsed.date||today(), icdc: parsed.icdc,
+              retailer: parsed.retailer || SI(target).name, items: parsed.items||[],
+              netInvoice: parsed.netInvoice||0, eChallan: parsed.eChallan||0,
+              prevCredit: parsed.prevCredit||0, subTotal: parsed.subTotal||0,
+              invoiceValue: parsed.invoiceValue||0, mrpRounding: parsed.mrpRounding||0,
+              exciseCess: parsed.exciseCess||0, tcs: parsed.tcs||0, turnoverTax: parsed.turnoverTax||0,
+              profTax: parsed.profTax||0, amtCredited: parsed.amtCredited||0,
+              eChallanRef: parsed.eChallanRef||'', creditBalance: parsed.creditBalance||parsed.amtCredited||0,
+              storeNum: target
+            });
+            sa('bills', bills);
+            (parsed.items||[]).forEach(it => addToStock(it.brandName,it.brandNum,it.ptype,it.packSize,it.casesDel,it.btlRate||it.unitRate||0,it.btlsDel));
+          } finally { CS = prevCS; }
+          have.add(parsed.icdc.toUpperCase());
+          addFetchedFileId(f.id);
+          line = `<div style="color:var(--green)">🆕 ${tag} — was missing, now saved</div>`;
+        }
+      }catch(e){
+        line = `<div style="color:var(--red)">❌ ${esc(f.name)} — ${esc((e.message||'error').slice(0,60))}</div>`;
+      }
+      lines.push(line);
+    }
+    say(`<div style="background:var(--bg2);border-radius:8px;padding:8px;font-size:.7rem">${lines.join('')}</div>`);
+    try{ renderPurchaseList(); renderStockTable(); renderDash(); }catch(e){}
+  }catch(e){ say(`<span style="color:var(--red)">❌ ${esc(e.message||'failed')}</span>`); }
+}
+
 async function fetchGdrivePDFs(refetchAll){
   const st = document.getElementById('gdrive-pdf-status');
   const folderUrl = localStorage.getItem('lm_gdrive_pdf_folder') || '';
@@ -7377,6 +7461,7 @@ async function fetchGdrivePDFs(refetchAll){
       // 1. Drive file ID (most reliable — permanent, survives renames)
       // 2. ICDC number extracted from filename (fallback for renamed files)
       const fetchedIds = getFetchedFileIds();
+      const icdcMap = getFetchedIcdcMap();
       // Safety net: a remembered file is still re-checked when Drive holds more PDFs
       // dated that day than the app holds bills (i.e. it was marked done but never saved).
       const billsOnDate = {}, filesOnDate = {};
@@ -7386,7 +7471,10 @@ async function fetchGdrivePDFs(refetchAll){
       toProcess = allFiles.filter(f=>{
         if(f.tooBig) return false;
         // Already processed this exact Drive file?
-        if(fetchedIds.has(f.id) && !looksUnsaved(f)) return false;
+        if(fetchedIds.has(f.id)){
+          const known = icdcMap[f.id];
+          if(known ? savedICDCs.has(known) : !looksUnsaved(f)) return false;   // known bill still saved
+        }
         // ICDC in filename already saved?
         const icdc = (f.name||'').match(/ICDC\d{10,}/i)?.[0]?.toUpperCase();
         if(icdc && savedICDCs.has(icdc)) return false;
@@ -7507,7 +7595,7 @@ async function fetchGdrivePDFs(refetchAll){
         }
         CS = prevCS;
         // Remember this file ID so it's skipped on future fetches
-        if(!refetchAll) addFetchedFileId(f.id);
+        if(!refetchAll) rememberFetched(f.id, parsed.icdc);
 
         // Free memory — longer pause every 10 files for iOS GC
         const pauseMs = (i > 0 && i % 10 === 0) ? 1000 : 150;
@@ -7571,6 +7659,18 @@ async function fetchGdrivePDFs(refetchAll){
     checkMissingFinancials();
     const navBadge = document.querySelector('.nb[onclick*="purchases"] .ni');
     if(navBadge) navBadge.textContent = '📦';
+
+    // Credit chain still has gaps? Look for the missing PDFs automatically.
+    try{
+      if(st) st.innerHTML += '<div style="margin-top:6px;color:var(--t3)">🔍 Checking credit chain for missing bills…</div>';
+      const ar = await autoRecheckGaps();
+      if(st){
+        const last = st.lastElementChild; if(last) last.remove();
+        if(ar.found.length) st.innerHTML += `<div style="margin-top:6px;color:var(--green)">✅ Credit-chain check found and saved ${ar.found.length} missing bill(s): ${esc(ar.found.join(', '))}</div>`;
+        else if(ar.gaps) st.innerHTML += `<div style="margin-top:6px;color:var(--t2)">ℹ️ ${ar.gaps} credit-chain gap(s) remain, but no unsaved PDF was found for them in Drive (possibly a challan paid before the next bill).</div>`;
+      }
+      if(ar.found.length){ renderPurchaseList(); renderDash(); renderStockTable(); }
+    }catch(e){ console.warn('[autoRecheckGaps]', e); }
 
   } catch(e){
     if(st) st.innerHTML=`<span style="color:var(--red)">❌ ${e.message}</span>`;
