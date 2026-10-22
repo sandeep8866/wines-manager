@@ -244,7 +244,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div class="sp-logo">🥃</div>
   <div class="sp-title">Wines Manager</div>
   <div class="sp-sub">Telangana Excise · ICDC Bills</div>
-  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v14.4 · 22 Oct 2026</div>
+  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v14.5 · 22 Oct 2026</div>
   <div class="sp-bar"><div class="sp-fill"></div></div>
 </div>
 
@@ -253,7 +253,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div id="store-btns" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
   <div id="store-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
   <div id="topbar-date" style="white-space:nowrap"></div>
-  <div id="app-ver-badge" title="Built: 22 Oct 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v14.4 · 221026</div>
+  <div id="app-ver-badge" title="Built: 22 Oct 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v14.5 · 221026</div>
 </div>
 
 <!-- MAIN -->
@@ -369,6 +369,10 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
       <button class="btn btn-out" onclick="fetchGdrivePDFs(false)">📥 Fetch New Bills</button>
       <button class="btn btn-out" onclick="fetchGdrivePDFs(true)">🔄 Re-fetch All Bills</button>
       <button class="btn btn-out" onclick="clearFetchedFileIds();toast('File cache cleared — next Fetch New Bills will re-check all files')" style="color:var(--t3);font-size:.72rem">🗑 Clear Skip Cache</button>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap">
+      <input class="fc" type="text" id="diag-filter" placeholder="file name contains… e.g. Jan-2026" style="font-size:.72rem;max-width:230px">
+      <button class="btn btn-xs btn-out" onclick="diagnoseDrive()">🩺 Why wasn't it imported?</button>
     </div>
     <div id="gdrive-pdf-status" style="margin-top:8px;font-size:.75rem"></div>
     <div class="alert alert-info" style="margin-top:10px;font-size:.72rem">
@@ -1058,7 +1062,7 @@ const STORE_INFO = loadStoreInfo();
 // Safe STORE_INFO accessor — handles both numeric and string keys
 function SI(id){ return STORE_INFO[id] || STORE_INFO[String(id)] || STORE_INFO[Number(id)] || {name:'Store '+id,short:'Store '+id,code:'',lic:''}; }
 
-const APP_VERSION = 'v14.4';
+const APP_VERSION = 'v14.5';
 const APP_BUILD   = '22 Oct 2026';
 let CS = getStoreIds()[0]; // current store — first store by default
 let mnRowCount = 1;
@@ -7292,6 +7296,40 @@ async function silentFetchNewDrivePDFs(){
   } catch(e){ /* silent fail */ }
 }
 
+// ── Why wasn't a Drive file imported? (read-only) ────────────────────────────
+async function diagnoseDrive(){
+  const st = document.getElementById('gdrive-pdf-status');
+  const filt = (document.getElementById('diag-filter')?.value||'').trim().toLowerCase();
+  const fm = (localStorage.getItem('lm_gdrive_pdf_folder')||'').match(/folders\/([a-zA-Z0-9_-]+)/);
+  if(!fm) { if(st) st.innerHTML='<span style="color:var(--red)">❌ Save a valid Drive folder link first</span>'; return; }
+  if(!getAppsScriptUrl()){ if(st) st.innerHTML='<span style="color:var(--red)">❌ Set the Apps Script URL first</span>'; return; }
+  if(st) st.innerHTML='<div class="loading"><div class="spin"></div>Reading folder list…</div>';
+  try{
+    const r = await cloudCall({action:'listFolder', folderId: fm[1]});
+    if(!r.ok) throw new Error(r.error||'listFolder failed');
+    const files = r.files||[];
+    const fetched = getFetchedFileIds();
+    const billsOn = {};
+    getStoreIds().forEach(sid=>{ (JSON.parse(localStorage.getItem(`lm_s${sid}_bills`))||[]).forEach(b=>{ if(b.date) billsOn[b.date]=(billsOn[b.date]||0)+1; }); });
+    const rows = files.filter(f=>!filt || (f.name||'').toLowerCase().includes(filt)).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    const capHint = [100,200,250,500,1000].includes(files.length)
+      ? `<div style="color:var(--red);margin:4px 0">⚠️ The list has exactly ${files.length} files — the Apps Script may be capping the list, so older files never reach the app.</div>` : '';
+    const why = f=>{
+      const d=_dateHintFromName(f.name||'');
+      if(f.tooBig) return '❌ over 10 MB — skipped';
+      const n = d ? (billsOn[d]||0) : null;
+      const rem = fetched.has(f.id) ? 'Drive ID is in the skip-cache' : 'not in skip-cache';
+      return `${rem}${d?` · app has ${n} bill(s) dated ${fmtDate(d)}`:' · no date in name'}`;
+    };
+    if(st) st.innerHTML = `
+      <div style="background:var(--bg2);border-radius:8px;padding:8px;font-size:.7rem">
+        <div><b>Drive returned ${files.length} file(s)</b>${filt?` · ${rows.length} match “${esc(filt)}”`:''}</div>${capHint}
+        ${rows.length ? rows.slice(0,60).map(f=>`<div style="padding:2px 0;border-top:1px solid rgba(0,0,0,.05)">${esc(f.name)} <span style="color:var(--t3)">— ${why(f)}</span></div>`).join('')
+          : `<div style="color:var(--red);margin-top:4px">No file in the list matches “${esc(filt)}” — the app is never told about it, so the problem is in the Apps Script / folder, not the PDF.</div>`}
+      </div>`;
+  }catch(e){ if(st) st.innerHTML=`<span style="color:var(--red)">❌ ${esc(e.message||'Diagnose failed')}</span>`; }
+}
+
 async function fetchGdrivePDFs(refetchAll){
   const st = document.getElementById('gdrive-pdf-status');
   const folderUrl = localStorage.getItem('lm_gdrive_pdf_folder') || '';
@@ -7339,10 +7377,16 @@ async function fetchGdrivePDFs(refetchAll){
       // 1. Drive file ID (most reliable — permanent, survives renames)
       // 2. ICDC number extracted from filename (fallback for renamed files)
       const fetchedIds = getFetchedFileIds();
+      // Safety net: a remembered file is still re-checked when Drive holds more PDFs
+      // dated that day than the app holds bills (i.e. it was marked done but never saved).
+      const billsOnDate = {}, filesOnDate = {};
+      getStoreIds().forEach(sid=>{ (JSON.parse(localStorage.getItem(`lm_s${sid}_bills`))||[]).forEach(b=>{ if(b.date) billsOnDate[b.date]=(billsOnDate[b.date]||0)+1; }); });
+      allFiles.forEach(f=>{ const d=_dateHintFromName(f.name||''); if(d) filesOnDate[d]=(filesOnDate[d]||0)+1; });
+      const looksUnsaved = f=>{ const d=_dateHintFromName(f.name||''); return !!d && (billsOnDate[d]||0) < (filesOnDate[d]||0); };
       toProcess = allFiles.filter(f=>{
         if(f.tooBig) return false;
         // Already processed this exact Drive file?
-        if(fetchedIds.has(f.id)) return false;
+        if(fetchedIds.has(f.id) && !looksUnsaved(f)) return false;
         // ICDC in filename already saved?
         const icdc = (f.name||'').match(/ICDC\d{10,}/i)?.[0]?.toUpperCase();
         if(icdc && savedICDCs.has(icdc)) return false;
