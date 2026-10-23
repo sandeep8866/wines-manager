@@ -244,7 +244,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div class="sp-logo">🥃</div>
   <div class="sp-title">Wines Manager</div>
   <div class="sp-sub">Telangana Excise · ICDC Bills</div>
-  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v14.8 · 23 Oct 2026</div>
+  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v14.9 · 23 Oct 2026</div>
   <div class="sp-bar"><div class="sp-fill"></div></div>
 </div>
 
@@ -253,7 +253,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div id="store-btns" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
   <div id="store-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
   <div id="topbar-date" style="white-space:nowrap"></div>
-  <div id="app-ver-badge" title="Built: 23 Oct 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v14.8 · 231026</div>
+  <div id="app-ver-badge" title="Built: 23 Oct 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v14.9 · 231026</div>
 </div>
 
 <!-- MAIN -->
@@ -1063,7 +1063,7 @@ const STORE_INFO = loadStoreInfo();
 // Safe STORE_INFO accessor — handles both numeric and string keys
 function SI(id){ return STORE_INFO[id] || STORE_INFO[String(id)] || STORE_INFO[Number(id)] || {name:'Store '+id,short:'Store '+id,code:'',lic:''}; }
 
-const APP_VERSION = 'v14.8';
+const APP_VERSION = 'v14.9';
 const APP_BUILD   = '23 Oct 2026';
 let CS = getStoreIds()[0]; // current store — first store by default
 let mnRowCount = 1;
@@ -5562,12 +5562,23 @@ async function recheckGapCore(w, progress){
   // Skip a file only when we KNOW its ICDC and that bill is saved. File names carry the
   // download date, not always the bill date, so allow one day either side.
   const dayShift = (d,n)=>{ const t=new Date(d+'T00:00:00Z'); t.setUTCDate(t.getUTCDate()+n); return t.toISOString().slice(0,10); };
-  const cands = files.filter(f=>{
+  const winLo = dayShift(lo,-1), winHi = dayShift(hi,1);
+  // day-month pairs inside the window (for names like "29-07T" that carry no year)
+  const dm = new Set(); for(let d=winLo; d<=winHi; d=dayShift(d,1)) dm.add(d.slice(8,10)+'-'+d.slice(5,7));
+  const dmHint = name=>{ const m=(name||'').match(/^[A-Za-z]?(\d{1,2})[-_.](\d{1,2})(?![\d])/); return m ? m[1].padStart(2,'0')+'-'+m[2].padStart(2,'0') : ''; };
+  const inWin = [], noHint = [];
+  files.forEach(f=>{
     const ic = (f.name||'').match(/ICDC\d{10,}/i)?.[0]?.toUpperCase() || idMap[f.id];
-    if(ic && have.has(ic)) return false;
+    if(ic && have.has(ic)) return;                      // known bill, already saved
     const d = _dateHintFromName(f.name||'');
-    return d ? (d>=dayShift(lo,-1) && d<=dayShift(hi,1)) : true;
-  }).sort((a,b)=>a.name.localeCompare(b.name)).slice(0, 40);
+    if(d){ if(d>=winLo && d<=winHi) inWin.push(f); return; }
+    const x = dmHint(f.name);
+    if(x){ if(dm.has(x)) inWin.push(f); return; }
+    noHint.push(f);                                     // name tells us nothing about the date
+  });
+  const byName = (a,b)=>a.name.localeCompare(b.name);
+  // files that should be in the window come first and are never cut; unknown-date files fill the rest
+  const cands = inWin.sort(byName).slice(0,80).concat(noHint.sort(byName).slice(0,15));
 
   for(let i=0;i<cands.length;i++){
     const f = cands[i];
