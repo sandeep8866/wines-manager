@@ -244,7 +244,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div class="sp-logo">🥃</div>
   <div class="sp-title">Wines Manager</div>
   <div class="sp-sub">Telangana Excise · ICDC Bills</div>
-  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v14.7 · 23 Oct 2026</div>
+  <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-bottom:8px;letter-spacing:.05em">v14.8 · 23 Oct 2026</div>
   <div class="sp-bar"><div class="sp-fill"></div></div>
 </div>
 
@@ -253,7 +253,7 @@ th.col-drag.drag-over{border-left:2px solid var(--gold1)}
   <div id="store-btns" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
   <div id="store-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
   <div id="topbar-date" style="white-space:nowrap"></div>
-  <div id="app-ver-badge" title="Built: 23 Oct 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v14.7 · 231026</div>
+  <div id="app-ver-badge" title="Built: 23 Oct 2026" style="font-size:.65rem;color:#ff6b6b;font-weight:700;margin-left:6px;cursor:default;white-space:nowrap;background:rgba(255,100,100,.15);border:1px solid rgba(255,100,100,.4);padding:2px 7px;border-radius:10px;letter-spacing:.02em">v14.8 · 231026</div>
 </div>
 
 <!-- MAIN -->
@@ -1063,7 +1063,7 @@ const STORE_INFO = loadStoreInfo();
 // Safe STORE_INFO accessor — handles both numeric and string keys
 function SI(id){ return STORE_INFO[id] || STORE_INFO[String(id)] || STORE_INFO[Number(id)] || {name:'Store '+id,short:'Store '+id,code:'',lic:''}; }
 
-const APP_VERSION = 'v14.7';
+const APP_VERSION = 'v14.8';
 const APP_BUILD   = '23 Oct 2026';
 let CS = getStoreIds()[0]; // current store — first store by default
 let mnRowCount = 1;
@@ -5537,13 +5537,22 @@ function _dateHintFromName(name){
   return '';                                                         // no usable date in the name
 }
 
+// Where is a bill (by ICDC) saved? → {storeId, bill} or null
+function findSavedBill(icdc){
+  const k = String(icdc||'').toUpperCase(); if(!k) return null;
+  for(const sid of getStoreIds()){
+    const b = (JSON.parse(localStorage.getItem(`lm_s${sid}_bills`))||[]).find(x=>(x.icdc||'').toUpperCase()===k);
+    if(b) return {storeId:sid, bill:b};
+  }
+  return null;
+}
 // Core: find & save unsaved PDFs dated inside one credit-chain gap. Ignores the skip-cache.
 async function recheckGapCore(w, progress){
   const fm = (localStorage.getItem('lm_gdrive_pdf_folder')||'').match(/folders\/([a-zA-Z0-9_-]+)/);
   if(!fm) throw new Error('Save the Drive folder link in Purchases first');
   if(!getAppsScriptUrl()) throw new Error('Set the Apps Script URL first');
   const storeId = w.storeId, lo = w.rawA, hi = w.rawB;
-  const saved = [], failed = []; let seen = 0;
+  const saved = [], failed = [], already = []; let seen = 0;
   const r = await cloudCall({action:'listFolder', folderId: fm[1]});
   if(!r.ok) throw new Error(r.error || 'Could not list the folder');
   const files = (r.files||[]).filter(f=>!f.tooBig);
@@ -5572,7 +5581,12 @@ async function recheckGapCore(w, progress){
       seen++;
       if(!parsed || !parsed.items?.length || !parsed.icdc){ failed.push(f.name); continue; }
       const ic = parsed.icdc.toUpperCase();
-      if(have.has(ic)){ rememberFetched(f.id, ic); continue; }
+      if(have.has(ic)){
+        rememberFetched(f.id, ic);
+        const sv = findSavedBill(ic);
+        if(sv && parsed.date>=lo && parsed.date<=hi) already.push({name:f.name, icdc:parsed.icdc, date:parsed.date, savedStore:sv.storeId, savedDate:sv.bill.date});
+        continue;
+      }
       if(parsed.date < lo || parsed.date > hi) continue;
       const target = detectStore(parsed) || storeId;
       if(String(target) !== String(storeId)) continue;
@@ -5597,7 +5611,7 @@ async function recheckGapCore(w, progress){
       saved.push(`${parsed.icdc.slice(-6)} (${fmtDate(parsed.date)})`);
     }catch(e){ failed.push(f.name+' — '+(e.message||'error').slice(0,40)); }
   }
-  return {saved, seen, failed};
+  return {saved, seen, failed, already};
 }
 
 async function recheckDriveForGap(wi, btn){
@@ -5617,7 +5631,13 @@ async function recheckDriveForGap(wi, btn){
   if(btn) btn.disabled = false;
   let msg;
   if(res.saved.length) msg = `<span style="color:var(--green)">✅ Found and saved ${res.saved.length} missing bill${res.saved.length>1?'s':''}: ${esc(res.saved.join(', '))}</span>`;
-  else msg = `<span style="color:var(--t2)">No unsaved PDF for ${fmtDate(w.rawA)} – ${fmtDate(w.rawB)} found in the Drive folder (checked ${res.seen}). If the gap remains, it is most likely a challan paid before the next bill — use ✏️ Fix e-Challan.</span>`;
+  else msg = `<span style="color:var(--t2)">No unsaved PDF for ${fmtDate(w.rawA)} – ${fmtDate(w.rawB)} found in the Drive folder (read ${res.seen} file(s)).</span>`;
+  if(res.already.length){
+    msg += `<div style="margin-top:4px;color:var(--t2)">These bills in the gap are already saved, but not in this shop's chain:` +
+      res.already.map(a=>`<div>• ${esc(a.name)} → ${esc(a.icdc.slice(-6))}, bill date ${fmtDate(a.date)} — saved under <b>${esc(SI(a.savedStore).short||('Store '+a.savedStore))}</b> dated ${fmtDate(a.savedDate)}</div>`).join('') + `</div>`;
+  } else if(!res.saved.length){
+    msg += `<div style="margin-top:3px;color:var(--t3)">If the gap remains, it is most likely a challan paid before the next bill — use ✏️ Fix e-Challan.</div>`;
+  }
   if(res.failed.length) msg += `<div style="color:var(--red);margin-top:3px">⚠️ Could not read: ${esc(res.failed.slice(0,3).join('; '))}</div>`;
   say(msg);
   if(res.saved.length){
@@ -7353,6 +7373,8 @@ async function diagnoseDrive(){
       const d=_dateHintFromName(f.name||'');
       if(f.tooBig) return '❌ over 10 MB — skipped';
       const n = d ? (billsOn[d]||0) : null;
+      const ic = getFetchedIcdcMap()[f.id];
+      if(ic){ const sv = findSavedBill(ic); return sv ? `bill ${ic.slice(-6)} saved under ${SI(sv.storeId).short||sv.storeId} dated ${fmtDate(sv.bill.date)}` : `bill ${ic.slice(-6)} is NOT saved anywhere`; }
       const rem = fetched.has(f.id) ? 'Drive ID is in the skip-cache' : 'not in skip-cache';
       return `${rem}${d?` · app has ${n} bill(s) dated ${fmtDate(d)}`:' · no date in name'}`;
     };
